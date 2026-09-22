@@ -32,6 +32,7 @@ func DefaultsV2() Config {
 	include := legacy.Includes.DefaultAgentRules
 	progress := legacy.Readiness.Progress
 	autoCheck := legacy.Update.AutoCheck
+	autoApply := legacy.Update.AutoApply
 	loginShell := legacy.Daemon.LoginShell
 	c := Config{
 		Version:    2,
@@ -43,7 +44,7 @@ func DefaultsV2() Config {
 			Retention: SystemRetention{Quarantined: legacy.Retention.Quarantined, RecoverySnapshot: legacy.Retention.RecoverySnapshot, ExpiredSessionTombstone: legacy.Retention.ExpiredSessionTombstone, FailedJob: legacy.Retention.FailedJob, EventLog: legacy.Retention.EventLog},
 			Discovery: SystemDiscovery{MaxEntries: legacy.Discovery.MaxEntries, Timeout: legacy.Discovery.Timeout, ReconcileInterval: legacy.Discovery.ReconcileInterval},
 			Resume:    legacy.Resume, Lease: legacy.Lease, Sessions: legacy.Sessions, Logging: legacy.Logging,
-			Update: SystemUpdate{AutoCheck: &autoCheck}, Daemon: SystemDaemon{LoginShell: &loginShell},
+			Update: SystemUpdate{AutoCheck: &autoCheck, AutoApply: &autoApply}, Daemon: SystemDaemon{LoginShell: &loginShell},
 		},
 		WorkspaceDefaults: WorkspaceDefaults{
 			Worktree:     legacy.Worktree.Undefined,
@@ -119,6 +120,12 @@ func withLegacyAdapter(c Config) Config {
 		if old.Update.AutoCheck != builtin.Update.AutoCheck {
 			value := old.Update.AutoCheck
 			c.System.Update.AutoCheck = &value
+		}
+	}
+	if c.System.Update.AutoApply == nil || (builtin.System.Update.AutoApply != nil && *c.System.Update.AutoApply == *builtin.System.Update.AutoApply) {
+		if old.Update.AutoApply != builtin.Update.AutoApply {
+			value := old.Update.AutoApply
+			c.System.Update.AutoApply = &value
 		}
 	}
 	if c.System.Daemon.LoginShell == nil || (builtin.System.Daemon.LoginShell != nil && *c.System.Daemon.LoginShell == *builtin.System.Daemon.LoginShell) {
@@ -359,6 +366,9 @@ func overlaySystem(dst *SystemConfig, src SystemConfig, raw Config) {
 	if raw.has("system.update.auto_check", src.Update.AutoCheck != nil) {
 		dst.Update.AutoCheck = src.Update.AutoCheck
 	}
+	if raw.has("system.update.auto_apply", src.Update.AutoApply != nil) {
+		dst.Update.AutoApply = src.Update.AutoApply
+	}
 	if raw.has("system.daemon.login_shell", src.Daemon.LoginShell != nil) {
 		dst.Daemon.LoginShell = src.Daemon.LoginShell
 	}
@@ -472,6 +482,7 @@ func flattenV2(c *Config) {
 	c.Agent.AddDir = w.Agent.AddDir
 	c.Resume, c.Lease, c.Sessions, c.Logging = s.Resume, s.Lease, s.Sessions, s.Logging
 	c.Update.AutoCheck = derefBool(s.Update.AutoCheck)
+	c.Update.AutoApply = derefBool(s.Update.AutoApply)
 	c.Daemon.LoginShell = derefBool(s.Daemon.LoginShell)
 }
 

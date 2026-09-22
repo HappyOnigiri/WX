@@ -101,5 +101,11 @@ restartの完了は`Ping`が返すPIDの変化で判定し、PIDを返さない�
 LaunchAgentの`ThrottleInterval`を短くし、連続再起動時のlaunchdの待機を詰める。
 ログインシェル経由で起動してもシェルは`exec`で置き換わるため、ppidと`XPC_SERVICE_NAME`から見る`underLaunchd`の判定はこのゲートでも変わらない（[バージョンとリリース](release.md)）。
 
+自動アップデートの適用だけは、このゲートを使わず貸出0件も要求する専用の述語（`updateApplyIdle`）で判定する。
+利用者が指示していない置換なので、作業中のエージェントを巻き込まないことを優先するためである。
+逆に貸出条件をゲート本体へ足すことはしない。
+貸出は長時間1件以上のままになり得るので、`wx daemon stop`と`wx daemon restart`が返らなくなる。
+適用そのものは切り離した子が行い、置換後の入れ替えは従来どおりバイナリ差し替えの検知がこのゲートへ載せる（[バージョンとリリース](release.md)）。
+
 入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)である。
 ゲートがjobsとRPCの両方を待つことは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)が固定している。

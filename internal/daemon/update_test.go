@@ -210,3 +210,31 @@ func TestUpdateStatusRPCPassesTheClaimFlagThrough(t *testing.T) {
 		t.Fatalf("reply=%+v, want the announcement claimed", reply)
 	}
 }
+
+// TestDisablingTheAutomaticApplyKeepsTheAnnouncement は、auto_apply を切っても新版のお知らせが
+// 出続けることを守る。UpdateState が auto_apply を読み始めると、自動導入を断った利用者から
+// 手で更新する手掛かりまで消える。
+func TestDisablingTheAutomaticApplyKeepsTheAnnouncement(t *testing.T) {
+	t.Parallel()
+	manager, _ := newUpdateManager(t, releaseProbe("v1.0.0", func(context.Context) (update.Release, error) {
+		return update.Release{Tag: "v1.1.0", URL: "https://example.test/v1.1.0"}, nil
+	}))
+	disabled := false
+	manager.cfg.System.Update.AutoApply = &disabled
+	ctx := context.Background()
+	manager.maybeCheckUpdate(ctx)
+	status, err := manager.UpdateState(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Available {
+		t.Fatalf("status=%+v, want the dashboard to keep seeing the update", status)
+	}
+	claimed, err := manager.UpdateState(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !claimed.Announce {
+		t.Fatalf("status=%+v, want the interactive launch to still announce it", claimed)
+	}
+}
