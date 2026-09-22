@@ -199,7 +199,7 @@ func TestSessionStartHookSendsVerifiedCodexForkParent(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			payload, err := json.Marshal(map[string]string{
 				"session_id":      test.sessionID,
-				"source":          "startup-" + string(rune('a'+index)),
+				"source":          "fork",
 				"transcript_path": test.transcriptPath,
 			})
 			if err != nil {

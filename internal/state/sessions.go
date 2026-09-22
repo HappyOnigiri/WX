@@ -275,7 +275,7 @@ func (s *Store) BindAgentSessionFromHook(ctx context.Context, id, agentID, sourc
 			return false, err
 		}
 	}
-	if kind == "codex" && parent == "" && sessionState == "ACTIVE" && currentAgentID != "" && currentAgentID != agentID && source == "startup" {
+	if kind == "codex" && parent == "" && sessionState == "ACTIVE" && currentAgentID != "" && currentAgentID != agentID && (source == "startup" || source == "fork") {
 		return false, nil
 	}
 	if parent != "" {
