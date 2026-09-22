@@ -287,7 +287,9 @@ Options:
             print nothing when there are none. The installer runs this.
   --remove  delete the configuration wx setup writes and report what was kept
   --item    configure only this item (for example hooks.claude)
-  --action  apply one action offered for --item by wx setup --check
+  --action  apply one action offered for --item by wx setup --check, or
+            recommended to apply the suggested one and print nothing when the
+            item already matches what wx would write
   --value   value used by the manual action`,
 		JA: `使い方: wx setup [--check [--json]] [--update] [--remove]
        wx setup --item <id> --action <action> [--value <value>]
@@ -315,7 +317,8 @@ walk 完了時の終了コードは0、適用できない項目・キャンセ�
   --update  wx の書き込み内容と一致しない項目だけ提示し、なければ無表示。installer が実行
   --remove  wx setup が書き込んだ設定を削除し、残したものを報告
   --item    この項目だけを設定（例: hooks.claude）
-  --action  wx setup --check が提示した --item の action を適用
+  --action  wx setup --check が提示した --item の action を適用。recommended を
+            渡すと推奨操作を当て、変更が要らない項目では無表示で終了
   --value   manual action に使う値`,
 	},
 	"help.command.hook": {

@@ -41,7 +41,7 @@ func runSetup(ctx context.Context, args []string) int {
 	update := fs.Bool("update", false, "offer only the items that diverged from what wx would write")
 	remove := fs.Bool("remove", false, "delete the configuration wx setup writes, leaving the shell startup file alone")
 	item := fs.String("item", "", "configure one setup item without walking through the others")
-	action := fs.String("action", "", "with --item, apply one of the actions reported for that item")
+	action := fs.String("action", "", "with --item, apply one of the actions reported for that item, or recommended for the suggested one")
 	value := fs.String("value", "", "with a manual --item action, use this value")
 	fs.Usage = func() { commandUsageLanguage(os.Stdout, "setup", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "setup", args); done {
@@ -182,6 +182,14 @@ func runSetupItem(ctx context.Context, options setup.Options, id string, action 
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, errorPrefix, localizer.Error(err))
 		return 1
+	}
+	// recommended は項目の状態を呼び出し側が先に問い合わせなくても済むようにする予約語で、
+	// Collect が出した既定操作をそのまま当てる。変更が要らない項目は何も出さずに 0 で終える。
+	if action == setupModeRecommended {
+		action = step.Default
+		if len(step.Options) == 0 || action == setup.ActionKeep {
+			return 0
+		}
 	}
 	if !slices.Contains(step.Options, action) {
 		available := make([]string, 0, len(step.Options))

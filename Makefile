@@ -106,6 +106,7 @@ build:
 install: build
 	install -d "$(INSTALL_DIR)"
 	install -m 0755 bin/wx "$(INSTALL_DIR)/wx"
+	bash scripts/install-local.sh "$(INSTALL_DIR)"
 
 # リリース版は明示したタグでのみ生成し、開発用 build/install の -dev を維持する。
 .PHONY: release release-check

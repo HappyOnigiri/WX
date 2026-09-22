@@ -445,6 +445,31 @@ func TestSetupItemAppliesOnlyTheRequestedItem(t *testing.T) {
 	}
 }
 
+// TestSetupItemRecommendedAppliesTheDefaultAndStaysQuietWhenNothingIsNeeded は、
+// 状態を先に問い合わせない自動化のための予約語を守る。install と update の選び分けを
+// 呼び出し側へ写さずに済むことと、変更が要らない項目を失敗にしないことが要件である。
+func TestSetupItemRecommendedAppliesTheDefaultAndStaysQuietWhenNothingIsNeeded(t *testing.T) {
+	home, options := setupCommandHome(t)
+	var out, errOut bytes.Buffer
+	if code := runSetupItem(context.Background(), options, "worktree_root", setupModeRecommended, "", &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "worktree_root") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "wx")); err != nil {
+		t.Fatalf("the recommended action was not applied: %v", err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runSetupItem(context.Background(), options, "worktree_root", setupModeRecommended, "", &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if out.String() != "" || errOut.String() != "" {
+		t.Fatalf("a settled item printed stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
 // writeFakeLaunchAgent は plist を置く。--remove は plist が無い環境では launchctl を呼ばないため、
 // 解除の経路を通すテストは実体を用意する必要がある。
 func writeFakeLaunchAgent(t *testing.T, home string) {

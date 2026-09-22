@@ -70,7 +70,11 @@ daemon自身も比較側になるので、書き戻さないとdaemonの環境�
 その代わり初回インストールではsetupが始まるまでの出力が英語になり、以降の案内はsetupが保存した値を読み戻して出す。
 更新では既存のbinaryか`config.yaml`から読んだ言語を最初から使う。
 
-開発用checkoutの`make install`はバイナリを置くだけなので、daemonの登録と更新反映は`wx daemon install`・`wx daemon restart`を自分で実行する。
+開発用checkoutの`make install`は、既定の配置先（`$HOME/.local/bin`）へ入れたときだけ、LaunchAgentの登録・daemonの入れ替え・agent hookの追従まで済ませる。
+判定とループは`scripts/install-local.sh`が持ち、状態ごとのinstall・update・startの選び分けは`wx setup --item <id> --action recommended`へ委ねて、同じ判定をshellへ書き写さない。
+`INSTALL_DIR`を変えた呼び出し（`make smoke`など）とmacOS以外では何もせず、バイナリを置くだけで終える。
+hookの陳腐化判定は`os.SameFile`なので、同じpathへの置き換えでは`make install`のたびに書き換わるわけではない。
+値が変わるのはhookのイベント集合が増えた版と、hookが未登録の環境だけである。
 
 ## 更新の確認と適用
 
