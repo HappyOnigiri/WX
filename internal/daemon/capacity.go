@@ -7,7 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -232,7 +232,9 @@ func (m *Manager) checkPrepareCapacityWithEstimator(ctx context.Context, slot st
 	for _, volume := range volumes {
 		report.Volumes = append(report.Volumes, *volume)
 	}
-	sort.Slice(report.Volumes, func(i, j int) bool { return report.Volumes[i].Volume < report.Volumes[j].Volume })
+	slices.SortFunc(report.Volumes, func(left, right CapacityVolume) int {
+		return strings.Compare(left.Volume, right.Volume)
+	})
 	return report, nil
 }
 

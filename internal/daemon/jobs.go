@@ -295,7 +295,7 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			if errors.Is(err, state.ErrOwnership) {
 				return err
 			}
-			if current, readErr := m.store.Slot(context.Background(), job.SlotID); readErr == nil && current.PreparationStartedAt != "" {
+			if m.preparationWasStarted(job.SlotID) {
 				return err
 			}
 			var prepareErr *workspace.PrepareCommandError
@@ -341,4 +341,14 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 	default:
 		return fmt.Errorf("unknown persistent job kind %s", job.Kind)
 	}
+}
+
+// preparationWasStarted は失敗した準備が既に書込みを始めたかを確認する。
+// slot の読み取りに失敗した場合は、再試行可否をこの補助判定だけで変えない。
+func (m *Manager) preparationWasStarted(slotID string) bool {
+	current, err := m.store.Slot(context.Background(), slotID)
+	if err != nil {
+		return false
+	}
+	return current.PreparationStartedAt != ""
 }

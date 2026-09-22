@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -179,14 +180,19 @@ func slotRepositoryViews(repositories map[string]workspace.RepositoryUsage) []Sl
 	if len(repositories) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(repositories))
+	for name := range repositories {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 	out := make([]SlotRepositoryView, 0, len(repositories))
-	for name, usage := range repositories {
+	for _, name := range names {
+		usage := repositories[name]
 		out = append(out, SlotRepositoryView{
 			Name: name, Files: usage.Files, AllocatedBytes: usage.AllocatedBytes,
 			SharedBytes: usage.SharedBytes, ExclusiveBytes: usage.AllocatedBytes - usage.SharedBytes,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

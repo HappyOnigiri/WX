@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"sort"
 
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -86,10 +87,10 @@ func (m *Manager) recordPrepareSubmodules(outcomes *workspace.SubmoduleOutcomes)
 		summaries = append(summaries, *summary)
 	}
 	sort.Slice(summaries, func(i, j int) bool {
-		if summaries[i].Repository != summaries[j].Repository {
-			return summaries[i].Repository < summaries[j].Repository
+		if order := cmp.Compare(summaries[i].Repository, summaries[j].Repository); order != 0 {
+			return order == -1
 		}
-		return summaries[i].Depth < summaries[j].Depth
+		return cmp.Compare(summaries[i].Depth, summaries[j].Depth) == -1
 	})
 	report := &PrepareSubmoduleReport{Summaries: summaries}
 	orderedItems := append([]workspace.SubmoduleOutcome(nil), items...)
@@ -115,7 +116,7 @@ func (m *Manager) recordPrepareSubmodules(outcomes *workspace.SubmoduleOutcomes)
 		}
 		left, right := priority(orderedItems[i].Action), priority(orderedItems[j].Action)
 		if left != right {
-			return left < right
+			return cmp.Compare(left, right) == -1
 		}
 		return outcomeLess(orderedItems[i], orderedItems[j])
 	})

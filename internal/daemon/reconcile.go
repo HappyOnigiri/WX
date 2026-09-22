@@ -15,12 +15,13 @@ import (
 )
 
 func (m *Manager) reconcileArtifacts(ctx context.Context) {
-	if jobs, err := m.store.EnsureRecoveryJobs(ctx); err != nil {
-		m.log.Error("reconstruct crash recovery jobs failed", "error", err)
-	} else {
+	jobs, jobsErr := m.store.EnsureRecoveryJobs(ctx)
+	if jobsErr == nil {
 		for _, job := range jobs {
 			m.schedule(job)
 		}
+	} else {
+		m.log.Error("reconstruct crash recovery jobs failed", "error", jobsErr)
 	}
 	if artifacts, err := m.store.SlotArtifacts(ctx); err == nil {
 		for _, artifact := range artifacts {
@@ -33,7 +34,8 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 				if slot, slotErr := m.store.Slot(ctx, artifact.ID); slotErr == nil && slot.OwnerSessionID != "" {
 					code = "ALLOCATION_INTERRUPTED"
 				}
-				if quarantineErr := m.store.QuarantineReservedSlot(ctx, artifact.ID, code); quarantineErr != nil {
+				quarantineErr := m.store.QuarantineReservedSlot(ctx, artifact.ID, code)
+				if quarantineErr != nil {
 					m.log.Warn("slot reservation changed before reconciliation", "slot_id", artifact.ID, "error", quarantineErr)
 				}
 				continue
@@ -47,8 +49,9 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 				continue
 			}
 			if !exists {
-				if err := m.store.QuarantineMissingSlot(ctx, artifact.ID, "OWNED_PATH_MISSING"); err != nil {
-					m.log.Error("quarantine missing owned path failed", "slot_id", artifact.ID, "error", err)
+				quarantineErr := m.store.QuarantineMissingSlot(ctx, artifact.ID, "OWNED_PATH_MISSING")
+				if quarantineErr != nil {
+					m.log.Error("quarantine missing owned path failed", "slot_id", artifact.ID, "error", quarantineErr)
 				}
 			}
 		}
@@ -65,18 +68,18 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 			switch category {
 			case "unknown_paths", "mismatched_refs":
 				present[item] = true
-				if _, err := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category]); err != nil {
-					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", err)
+				_, quarantineErr := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category])
+				if quarantineErr != nil {
+					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", quarantineErr)
 				}
 			case "unknown_refs":
 				present[item] = true
 				repositoryID, _, _ := strings.Cut(item, ":")
 				orphansByRepository[repositoryID]++
-				inserted, err := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category])
-				if err != nil {
-					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", err)
-				}
-				if inserted {
+				inserted, quarantineErr := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category])
+				if quarantineErr != nil {
+					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", quarantineErr)
+				} else if inserted {
 					newOrphans[repositoryID] = true
 				}
 				continue
@@ -93,8 +96,9 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 			"category", "unknown_refs", "repository", repositoryID, "refs", orphansByRepository[repositoryID])
 	}
 	// 再検出され続けるカテゴリだけを刈る。standby_slot・workspace_snapshot は reconcile が再検出しないため対象にしない。
-	if err := m.store.PruneQuarantinedArtifacts(ctx, []string{"unknown_paths", "unknown_refs", "mismatched_refs"}, present); err != nil {
-		m.log.Error("prune resolved quarantine records failed", "error", err)
+	pruneErr := m.store.PruneQuarantinedArtifacts(ctx, []string{"unknown_paths", "unknown_refs", "mismatched_refs"}, present)
+	if pruneErr != nil {
+		m.log.Error("prune resolved quarantine records failed", "error", pruneErr)
 	}
 }
 

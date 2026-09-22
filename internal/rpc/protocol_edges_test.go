@@ -121,6 +121,16 @@ func TestHandlerTimeoutUsesDefaultAtZero(t *testing.T) {
 	}
 }
 
+func TestMaxHandlerTimeoutIgnoresNonPositiveLiveCeiling(t *testing.T) {
+	server := &Server{
+		MaxHandlerTimeout:     37 * time.Second,
+		MaxHandlerTimeoutFunc: func() time.Duration { return 0 },
+	}
+	if got := server.maxHandlerTimeout(); got != 37*time.Second {
+		t.Fatalf("zero live ceiling=%s, want configured ceiling", got)
+	}
+}
+
 func TestPruneIdempotencyRemovesEntryAtExactTTL(t *testing.T) {
 	now := time.Now()
 	server := &Server{idem: map[string]*idempotentEntry{

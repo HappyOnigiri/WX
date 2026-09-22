@@ -255,10 +255,7 @@ func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit int
 		return false, err
 	}
 	if count >= limit {
-		if err := tx.Commit(); err != nil {
-			return false, err
-		}
-		return false, nil
+		return false, tx.Commit()
 	}
 	if err := insertReservedSlotTx(ctx, tx, slot); err != nil {
 		return false, err
@@ -351,20 +348,14 @@ func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []Sl
 		return Job{}, false, err
 	}
 	if currentGeneration != slot.Generation {
-		if err := tx.Commit(); err != nil {
-			return Job{}, false, err
-		}
-		return Job{}, false, nil
+		return Job{}, false, tx.Commit()
 	}
 	count, err := standbyCountTx(ctx, tx, slot.WorkspaceID)
 	if err != nil {
 		return Job{}, false, err
 	}
 	if count >= limit {
-		if err := tx.Commit(); err != nil {
-			return Job{}, false, err
-		}
-		return Job{}, false, nil
+		return Job{}, false, tx.Commit()
 	}
 	job, err := newJob("PREPARE", slot.WorkspaceID, slot.ID, "")
 	if err != nil {

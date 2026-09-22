@@ -73,7 +73,8 @@ func (m *Manager) registeredScopeWorkspace(ctx context.Context, cwd string) (sta
 		// 実体が別の repository へ置き換わっているときは記録へ強制結合せず、現在の Git identity で解決し直す。
 		member := false
 		if isRepository {
-			if member, err = m.store.WorkspaceHasCommonDir(ctx, slotScope.ID, common); err != nil {
+			member, err = m.store.WorkspaceHasCommonDir(ctx, slotScope.ID, common)
+			if err != nil {
 				return state.ScopeWorkspace{}, false, err
 			}
 		}

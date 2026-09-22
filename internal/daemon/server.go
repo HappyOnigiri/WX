@@ -80,10 +80,11 @@ func Serve(ctx context.Context) error {
 	}
 	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.MaxReadinessTimeout()), MaxHandlerTimeoutFunc: handlerCeilingFunc}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
-	if err := server.Serve(ctx); err != nil {
-		return fmt.Errorf("serve daemon: %w", err)
+	serveErr := server.Serve(ctx)
+	if serveErr == nil {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("serve daemon: %w", serveErr)
 }
 
 func slogLevel(value string) slog.Level {
@@ -122,11 +123,10 @@ func acquireDaemonLock(path string) (*os.File, error) {
 }
 
 func releaseDaemonLock(file *os.File) {
-	if file == nil {
-		return
+	if file != nil {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
 	}
-	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-	_ = file.Close()
 }
 
 // managerHandlerCeiling は handler の期限上限を、要求ごとに現在の設定から解く関数を返す。

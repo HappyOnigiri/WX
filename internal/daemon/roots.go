@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -152,13 +155,13 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 		}
 		m.mu.Unlock()
 		if pinned != "" {
-			if pinned != root.Identity {
-				m.log.Error("worktree root generation is not the pinned directory", "path", root.Path, "recorded", root.Identity, "pinned", pinned)
+			if pinned == root.Identity {
+				m.mu.Lock()
+				m.rootIDs[root.Path] = root.ID
+				m.mu.Unlock()
 				continue
 			}
-			m.mu.Lock()
-			m.rootIDs[root.Path] = root.ID
-			m.mu.Unlock()
+			m.log.Error("worktree root generation is not the pinned directory", "path", root.Path, "recorded", root.Identity, "pinned", pinned)
 			continue
 		}
 		_, release, openErr := m.existingRootDescriptor(root.Path)
@@ -212,20 +215,41 @@ func (m *Manager) rootForPath(path string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	path = filepath.Clean(path)
-	best := ""
+	type candidate struct {
+		path   string
+		active bool
+	}
+	known := make(map[string]candidate, len(m.roots)+len(m.rootIdentities))
 	for root := range m.roots {
-		if domain.IsWithin(root, path) {
-			if best == "" || len(root) > len(best) {
-				best = root
-			}
-		}
+		known[root] = candidate{path: root, active: true}
 	}
 	for root := range m.rootIdentities {
-		if domain.IsWithin(root, path) && (best == "" || len(root) > len(best)) {
-			best = root
+		if _, exists := known[root]; !exists {
+			known[root] = candidate{path: root}
 		}
 	}
-	return best, best != ""
+	roots := make([]candidate, 0, len(known))
+	for _, root := range known {
+		roots = append(roots, root)
+	}
+	slices.SortStableFunc(roots, func(a, b candidate) int {
+		if result := cmp.Compare(len(b.path), len(a.path)); result != 0 {
+			return result
+		}
+		if a.active != b.active {
+			if a.active {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.path, b.path)
+	})
+	for _, root := range roots {
+		if domain.IsWithin(root.path, path) {
+			return root.path, true
+		}
+	}
+	return "", false
 }
 
 // knownRoots は in-memory に登録済みの root へ DB の root 世代を重ねた集合を返す。値は active かどうかを表す。

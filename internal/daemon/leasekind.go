@@ -50,7 +50,7 @@ func (m *Manager) resolveLeaseAttrs(ctx context.Context, kind, ownerSessionID, o
 		return leaseAttrs{}, fmt.Errorf("unknown lease kind %q", kind)
 	}
 	attrs := leaseAttrs{Kind: kind}
-	if ownerPID > 0 {
+	if ownerPID >= 1 {
 		attrs.OwnerPID = ownerPID
 	}
 	if ownerSessionID == "" {
@@ -169,9 +169,11 @@ func (m *Manager) releaseExitedDirectLeases(ctx context.Context) {
 			continue
 		}
 		m.log.Info("releasing a lease whose launching process exited", "session_id", lease.Candidate.ID, "slot_id", lease.Candidate.SlotID)
-		if err := m.releaseLeaseWithoutToken(ctx, lease.Candidate, "direct-owner-exited"); err != nil {
-			m.log.Error("lease release failed", "session_id", lease.Candidate.ID, "error", err)
+		releaseErr := m.releaseLeaseWithoutToken(ctx, lease.Candidate, "direct-owner-exited")
+		if releaseErr == nil {
+			continue
 		}
+		m.log.Error("lease release failed", "session_id", lease.Candidate.ID, "error", releaseErr)
 	}
 }
 

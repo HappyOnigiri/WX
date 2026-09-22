@@ -340,13 +340,14 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 	root, ok := m.rootForPath(path)
 	if !ok {
 		configured, expandErr := config.ExpandHome(m.Config().WorktreeRoot())
-		if expandErr != nil {
+		if expandErr == nil {
+			if !domain.IsWithin(configured, path) {
+				return func() {}, nil
+			}
+			root = filepath.Clean(configured)
+		} else {
 			return func() {}, fmt.Errorf("%w: resolve configured wx root: %w", state.ErrOwnership, expandErr)
 		}
-		if !domain.IsWithin(configured, path) {
-			return func() {}, nil
-		}
-		root = filepath.Clean(configured)
 	}
 	m.mu.RLock()
 	active, known := m.roots[root]
@@ -398,10 +399,11 @@ func (m *Manager) retainLease(sessionID, path string) error {
 	_, ok := m.rootForPath(path)
 	if !ok {
 		configured, err := config.ExpandHome(m.Config().WorktreeRoot())
-		if err != nil || !domain.IsWithin(configured, path) {
-			if err == nil {
-				err = errors.New("lease path is outside known wx roots")
+		if err == nil {
+			if !domain.IsWithin(configured, path) {
+				return fmt.Errorf("%w: lease path is outside known wx roots", state.ErrOwnership)
 			}
+		} else {
 			return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 		}
 	}
