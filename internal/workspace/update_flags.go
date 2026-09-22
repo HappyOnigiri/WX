@@ -181,21 +181,30 @@ func stashFlaggedPaths(root *os.Root, paths []string, flags IndexFlags) ([]flagg
 			return nil, fmt.Errorf("%w: open index-flagged path %s: %w", ErrUpdateIneligible, path, err)
 		}
 		info, err := file.Stat()
-		if err == nil && !info.Mode().IsRegular() {
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("%w: read index-flagged path %s: %w", ErrUpdateIneligible, path, err)
+		}
+		if !info.Mode().IsRegular() {
 			err = fmt.Errorf("index-flagged path %s is not a regular file", path)
+			_ = file.Close()
+			return nil, fmt.Errorf("%w: read index-flagged path %s: %w", ErrUpdateIneligible, path, err)
 		}
-		var data []byte
-		if err == nil {
-			data, err = io.ReadAll(io.LimitReader(file, maxFlaggedUpdateBytes-total+1))
+		remaining := int64(maxFlaggedUpdateBytes) - total
+		if info.Size() > remaining {
+			_ = file.Close()
+			return nil, fmt.Errorf("%w: index-flagged paths in the diff exceed the update limit of %d bytes", ErrUpdateIneligible, int64(maxFlaggedUpdateBytes))
 		}
+		data, err := io.ReadAll(io.LimitReader(file, remaining+1))
 		_ = file.Close()
 		if err != nil {
 			return nil, fmt.Errorf("%w: read index-flagged path %s: %w", ErrUpdateIneligible, path, err)
 		}
-		total += int64(len(data))
-		if total > maxFlaggedUpdateBytes {
+		// 読み取り中に file が伸びても、上限を越えた内容を退避先へ積まない。
+		if int64(len(data)) > remaining {
 			return nil, fmt.Errorf("%w: index-flagged paths in the diff exceed the update limit of %d bytes", ErrUpdateIneligible, int64(maxFlaggedUpdateBytes))
 		}
+		total += int64(len(data))
 		entry.mode, entry.data = info.Mode().Perm(), data
 		stashed = append(stashed, entry)
 	}

@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -227,5 +228,44 @@ func TestStashFlaggedPathsAcceptsExactByteLimit(t *testing.T) {
 	}
 	if len(stashed) != 1 || len(stashed[0].data) != maxFlaggedUpdateBytes {
 		t.Fatalf("stashed=%d entries/%d bytes, want 1/%d", len(stashed), len(stashed[0].data), maxFlaggedUpdateBytes)
+	}
+}
+
+// flag 付き path が通常 file でない場合は、読み取りエラーへ潰さず形状違反として返す。
+func TestStashFlaggedPathsRejectsNonRegularPath(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "conf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	_, err = stashFlaggedPaths(root, []string{"conf"}, IndexFlags{SkipWorktree: []string{"conf"}})
+	if !errors.Is(err, ErrUpdateIneligible) || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Fatalf("non-regular flagged path error=%v, want a shape error", err)
+	}
+}
+
+// 複数 path の合計が上限を1 byteでも越える場合は、2件目を退避済みとして返さない。
+func TestStashFlaggedPathsRejectsAggregateByteOverflow(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "first"), []byte{'a'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "second"), bytes.Repeat([]byte{'b'}, maxFlaggedUpdateBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	_, err = stashFlaggedPaths(root, []string{"first", "second"}, IndexFlags{SkipWorktree: []string{"first", "second"}})
+	if !errors.Is(err, ErrUpdateIneligible) || !strings.Contains(err.Error(), "exceed the update limit") {
+		t.Fatalf("aggregate flagged path error=%v, want the byte limit", err)
 	}
 }
