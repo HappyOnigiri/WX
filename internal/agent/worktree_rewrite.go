@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -122,14 +123,7 @@ func worktreeAddHookOutput(payload []byte, workspaceRoot string) (preToolUseHook
 			SystemMessage: rewriteSystemMessage,
 		}, true
 	case worktreeAddDeny:
-		return preToolUseHookOutput{
-			HookSpecificOutput: preToolUseHookSpecificOutput{
-				HookEventName:            "PreToolUse",
-				PermissionDecision:       "deny",
-				PermissionDecisionReason: verdict.reason + " " + denyGuidance,
-			},
-			SystemMessage: denySystemMessage,
-		}, true
+		return denyPreToolUse(verdict.reason+" "+denyGuidance, denySystemMessage), true
 	case worktreeAddIgnore:
 		return preToolUseHookOutput{}, false
 	}
@@ -139,11 +133,11 @@ func worktreeAddHookOutput(payload []byte, workspaceRoot string) (preToolUseHook
 // writePreToolUseDecision は判定を 1 つの JSON として stdout へ書く。
 // pre-tool-use の stdout は JSON として解釈されるため、判定が無いときは何も書かない。
 // workspaceRoot は書き換え対象と判定する境界で、管理下 session と wx -n の直接起動で出所が違う。
-func writePreToolUseDecision(payload []byte, workspaceRoot string) {
+func writePreToolUseDecision(ctx context.Context, payload []byte, workspaceRoot string, managed bool) {
 	if len(payload) == 0 {
 		return
 	}
-	output, ok := worktreeAddHookOutput(payload, workspaceRoot)
+	output, ok := preToolUseDecision(ctx, payload, workspaceRoot, managed)
 	if !ok {
 		return
 	}
@@ -152,6 +146,18 @@ func writePreToolUseDecision(payload []byte, workspaceRoot string) {
 		return
 	}
 	_, _ = fmt.Fprintln(os.Stdout, string(encoded))
+}
+
+// preToolUseDecision は git worktree add の書き換えを優先し、判定を 1 つだけ選ぶ。
+// SubAgent の isolation とブランチ attach の deny は管理下 session（WX_SESSION_ID あり）に限る。
+func preToolUseDecision(ctx context.Context, payload []byte, workspaceRoot string, managed bool) (preToolUseHookOutput, bool) {
+	if output, ok := worktreeAddHookOutput(payload, workspaceRoot); ok || !managed {
+		return output, ok
+	}
+	if output, ok := subagentIsolationHookOutput(payload); ok {
+		return output, true
+	}
+	return branchAttachHookOutput(ctx, payload)
 }
 
 // commandRunsInWorkspace は cwd がこの session へ貸し出した workspace の配下かを判定する。
