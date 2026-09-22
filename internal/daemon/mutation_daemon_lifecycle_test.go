@@ -344,6 +344,13 @@ func TestMutationStatusReportsRootExclusiveBytesAgeRetentionAndOrder(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessions, ok := status["session_details"].([]state.SessionDiagnostic)
+	if !ok || len(sessions) != 1 || sessions[0].ID != "status-age" {
+		t.Fatalf("session details=%+v", status["session_details"])
+	}
+	if sessions[0].AgeSeconds != 0 {
+		t.Fatalf("malformed session CreatedAt produced age=%d, want zero", sessions[0].AgeSeconds)
+	}
 	encoded, err := json.Marshal(status["worktree_roots"])
 	if err != nil {
 		t.Fatal(err)

@@ -198,13 +198,24 @@ func (s *Store) fillSlotRepositories(ctx context.Context, rows []SlotSummary) er
 		return err
 	}
 	for i := range rows {
-		if paths := bySlot[rows[i].SlotID]; rows[i].SlotID != "" && len(paths) > 0 {
+		if rows[i].SlotID == "" {
+			if paths := bySession[rows[i].SessionID]; rows[i].SessionID != "" && len(paths) > 0 {
+				rows[i].Repositories = paths
+			}
+			continue
+		}
+		if paths := bySlot[rows[i].SlotID]; len(paths) > 0 {
 			rows[i].Repositories = paths
 			continue
 		}
-		if paths := bySession[rows[i].SessionID]; rows[i].SessionID != "" && len(paths) > 0 {
-			rows[i].Repositories = paths
+		if rows[i].SessionID == "" {
+			continue
 		}
+		paths := bySession[rows[i].SessionID]
+		if len(paths) == 0 {
+			continue
+		}
+		rows[i].Repositories = paths
 	}
 	return nil
 }

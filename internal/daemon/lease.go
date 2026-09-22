@@ -319,7 +319,10 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 	root, ok := m.rootForPath(s.Path)
 	if !ok {
 		configured, configuredErr := config.ExpandHome(m.Config().WorktreeRoot())
-		if configuredErr != nil || !domain.IsWithin(configured, s.Path) {
+		if configuredErr != nil {
+			return false, nil
+		}
+		if !domain.IsWithin(configured, s.Path) {
 			return false, nil
 		}
 	}

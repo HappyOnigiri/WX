@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -316,11 +318,11 @@ func recoveryRefFindings(mismatched, missing []recoveryRefIssue) []diag.Finding 
 // 欠落と不一致はその submodule の作業が復元できないことの予告なので、期限内なら問題として出す。
 func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
 	sorted := append([]submoduleRefIssue{}, issues...)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].ModuleDir != sorted[j].ModuleDir {
-			return sorted[i].ModuleDir < sorted[j].ModuleDir
+	slices.SortStableFunc(sorted, func(left, right submoduleRefIssue) int {
+		if order := cmp.Compare(left.ModuleDir, right.ModuleDir); order != 0 {
+			return order
 		}
-		return sorted[i].Ref < sorted[j].Ref
+		return cmp.Compare(left.Ref, right.Ref)
 	})
 	findings := make([]diag.Finding, 0, len(sorted))
 	for _, issue := range sorted {
@@ -349,7 +351,8 @@ func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
 		cause := "the state database records ref " + issue.Ref + " for submodule " + issue.Path + ", but its local module does not have it"
 		summaryMessage := message("diag.recovery.submodule_ref_missing")
 		causeMessage := message("diag.recovery.submodule_ref_missing_cause", "Ref", issue.Ref, "Path", issue.Path)
-		if issue.Kind == submoduleRefMismatched {
+		switch issue.Kind {
+		case submoduleRefMismatched:
 			summary = "a submodule recovery ref does not point at the snapshot object"
 			cause = "ref " + issue.Ref + " exists in the local module of submodule " + issue.Path + " but its object ID differs from the recorded one"
 			summaryMessage = message("diag.recovery.submodule_ref_mismatched")

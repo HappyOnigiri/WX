@@ -47,9 +47,10 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 		return err
 	}
 	m.forgetSlotUsage(slot.ID, root)
-	if replenish.ID != "" {
-		m.schedule(replenish)
+	if replenish.ID == "" {
+		return nil
 	}
+	m.schedule(replenish)
 	return nil
 }
 

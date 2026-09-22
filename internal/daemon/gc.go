@@ -106,15 +106,15 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	}
 	// SQL には最短の保持期間から作った緩い cutoff だけを置き、workspace ごとの正確な判定は Go 側で行う。
 	// 基準時刻は GC 一巡で共有し、問い合わせごとに現在時刻がずれないようにする。
-	endedFloor := state.FormatTime(nowTime.Add(-cfg.ShortestEndedWorktreeRetention()))
+	endedFloor := gcRetentionCutoff(nowTime, cfg.ShortestEndedWorktreeRetention())
 	endedBefore := func(root string) string {
 		retention, _ := cfg.EndedWorktreeForWorkspace(root)
-		return state.FormatTime(nowTime.Add(-retention))
+		return gcRetentionCutoff(nowTime, retention)
 	}
-	hotFloor := state.FormatTime(nowTime.Add(-cfg.ShortestHotStandbyRetention()))
+	hotFloor := gcRetentionCutoff(nowTime, cfg.ShortestHotStandbyRetention())
 	hotBefore := func(root string) string {
 		retention, _ := cfg.HotStandbyForWorkspace(root)
-		return state.FormatTime(nowTime.Add(-retention))
+		return gcRetentionCutoff(nowTime, retention)
 	}
 	warmFor := gcWarmFor(cfg)
 	items, err := m.store.GCCandidates(ctx, endedFloor, endedBefore)
@@ -172,7 +172,9 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		}
 	}
 	// 保護中の slot も候補には数える。保持期限は過ぎており、数から消すと回収されない理由を読む手掛かりが無くなる。
-	progress.Candidates = metadataCount + len(items) + len(protected) + len(standbys) + len(quarantined) + len(expiredSessions) + totalCold
+	for _, count := range []int{metadataCount, len(items), len(protected), len(standbys), len(quarantined), len(expiredSessions), totalCold} {
+		progress.Candidates += count
+	}
 	if dry {
 		// dry-run は状態を変更せず、候補が処理されずに残る見込みを pending として報告する。
 		progress.Pending = progress.Candidates
@@ -202,6 +204,12 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		m.log.Info("pruned repository records that no workspace, snapshot, or live slot needs", "removed", removed)
 	}
 	return progress.GCResult, progress.err()
+}
+
+// gcRetentionCutoff は一巡の基準時刻から保持期間を引いた SQL cutoff を作る。
+// 全候補問い合わせが同じ基準時刻を共有するため、問い合わせ間の時刻ずれで境界を跨がない。
+func gcRetentionCutoff(now time.Time, retention time.Duration) string {
+	return state.FormatTime(now.Add(-retention))
 }
 
 func (m *Manager) quarantineCleanupFailure(slotID string, runErr error) error {

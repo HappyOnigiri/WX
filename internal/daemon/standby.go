@@ -113,9 +113,10 @@ func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspa
 		if err != nil {
 			return err
 		}
-		if job.ID != "" {
-			m.schedule(job)
+		if job.ID == "" {
+			continue
 		}
+		m.schedule(job)
 	}
 	return nil
 }

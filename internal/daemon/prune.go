@@ -32,9 +32,8 @@ type PruneResult struct {
 func (m *Manager) PruneRecoveryRefs(ctx context.Context, all, dryRun bool) (PruneResult, error) {
 	result := PruneResult{DryRun: dryRun, All: all, KeptRefs: []PruneKeptRef{}, Errors: []string{}}
 	diagnostics := m.artifactDiagnostics(ctx)
-	if diagnosticErrors, _ := diagnostics["errors"].([]string); len(diagnosticErrors) > 0 {
-		result.Errors = append(result.Errors, diagnosticErrors...)
-	}
+	diagnosticErrors, _ := diagnostics["errors"].([]string)
+	result.Errors = append(result.Errors, diagnosticErrors...)
 	items, _ := diagnostics["unknown_refs"].([]string)
 	byRepository := map[string][]string{}
 	for _, item := range items {

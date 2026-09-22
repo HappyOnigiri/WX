@@ -41,14 +41,16 @@ func (m *Manager) ReleaseAgentSession(ctx context.Context, id, token, reason, ag
 	if session.AgentSessionID != agentSessionID {
 		return false, nil
 	}
-	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
-		return true, nil
+	if reason == "session-end-hook" {
+		if processAlive(session.ClientPID) || processAlive(session.AgentPID) {
+			return true, nil
+		}
 	}
 	job, changed, quarantineExpired, matched, err := m.store.ReleaseWithAgentSessionOutcome(ctx, id, session.WorkspaceID, session.SlotID, agentSessionID)
-	if err != nil || !matched {
-		return matched, err
+	if err == nil && matched {
+		return true, m.finishRelease(ctx, session, reason, job, changed, quarantineExpired)
 	}
-	return true, m.finishRelease(ctx, session, reason, job, changed, quarantineExpired)
+	return matched, err
 }
 
 func (m *Manager) finishRelease(ctx context.Context, session state.Session, reason string, job state.Job, changed, quarantineExpired bool) error {
@@ -99,7 +101,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	if err != nil {
 		return err
 	}
-	if s.State == "ARCHIVED" && (slot.State == "SNAPSHOTTED" || slot.State == "ARCHIVED") {
+	if s.State == "ARCHIVED" && archivedSnapshotSlotState(slot.State) {
 		return nil
 	}
 	if slot.State == "DRAINING" || slot.State == "SNAPSHOTTING" {
@@ -205,4 +207,15 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	// snapshot は管理対象の使用量を増やすため、周期測定を待たずに Disk へ反映する。
 	m.remeasureRootUsage()
 	return nil
+}
+
+// archivedSnapshotSlotState は、既に保存済みの session を再度 snapshot しない状態を返す。
+// 状態名を switch にまとめ、ARCHIVED session の再試行が安全な no-op である契約を明示する。
+func archivedSnapshotSlotState(slotState string) bool {
+	switch slotState {
+	case "SNAPSHOTTED", "ARCHIVED":
+		return true
+	default:
+		return false
+	}
 }

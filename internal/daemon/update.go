@@ -89,14 +89,18 @@ func (m *Manager) maybeCheckUpdate(ctx context.Context) {
 		// 失敗は記録するだけでは誰も読まない。オフラインやレート制限で確認が止まり続けても
 		// 案内が黙って出なくなるだけなので、調査の手掛かりを log に残す。
 		m.log.Warn("update check failed", "error", checkErr)
-		if recordErr := m.store.RecordUpdateCheck(ctx, "", "", checkErr.Error()); recordErr != nil {
-			m.log.Error("update check result could not be recorded", "error", recordErr)
+		recordErr := m.store.RecordUpdateCheck(ctx, "", "", checkErr.Error())
+		if recordErr == nil {
+			return
 		}
+		m.log.Error("update check result could not be recorded", "error", recordErr)
 		return
 	}
-	if recordErr := m.store.RecordUpdateCheck(ctx, release.Tag, release.URL, ""); recordErr != nil {
-		m.log.Error("update check result could not be recorded", "error", recordErr)
+	recordErr := m.store.RecordUpdateCheck(ctx, release.Tag, release.URL, "")
+	if recordErr == nil {
+		return
 	}
+	m.log.Error("update check result could not be recorded", "error", recordErr)
 }
 
 // updateCheckIsFresh はちょうど期限へ達した確認を古いものとして扱う。

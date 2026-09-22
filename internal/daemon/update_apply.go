@@ -143,7 +143,9 @@ func (m *Manager) maybeApplyUpdate(ctx context.Context) {
 // 子とその孫を launchd job へ紐付けたままにせず、子側の underLaunchd の誤判定も避けるためである。
 // PATH の先頭へ binDir を置くのは、install.sh と wx の ResolveBinary が PATH 上の wx を先に見るためである。
 func updateChildEnv(environ []string, binDir string) []string {
-	out := make([]string, 0, len(environ)+1)
+	// PATH は最後に 1 件だけ追加するが、capacity の先取りは必須ではない。
+	// 空の環境でも負の capacity を作らず、子の環境を同じ規則で組み立てる。
+	out := make([]string, 0, len(environ))
 	path := ""
 	for _, entry := range environ {
 		name, value, found := strings.Cut(entry, "=")
