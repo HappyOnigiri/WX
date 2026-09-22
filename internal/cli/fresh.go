@@ -143,7 +143,7 @@ func agentArgsContainPrompt(args []string, values map[string]agentOptionValue) b
 		}
 		switch values[name] {
 		case agentOptionOne:
-			if i+1 == len(args) {
+			if len(args[i:]) == 1 {
 				break
 			}
 			i++

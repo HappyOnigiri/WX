@@ -418,9 +418,6 @@ func (c Client) waitForRelease(ctx context.Context, reply *releaseReply, jsonOut
 			// job が既に GC されていても ReleaseStatus は session/slot の状態を返す。
 			return nil
 		}
-		if reply.State == "SUCCEEDED" || reply.State == "FAILED" || (reply.State == "" && reply.SlotState != "") {
-			return nil
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

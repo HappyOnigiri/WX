@@ -197,15 +197,18 @@ func TestV2MutationLegacyAdapterPrefersCanonicalAndChangedLegacyValues(t *testin
 	builtin := DefaultsV2()
 	legacyFalse := Config{
 		System: SystemConfig{
-			Update: SystemUpdate{AutoCheck: builtin.System.Update.AutoCheck},
+			Update: SystemUpdate{AutoCheck: builtin.System.Update.AutoCheck, AutoApply: builtin.System.Update.AutoApply},
 			Daemon: SystemDaemon{LoginShell: builtin.System.Daemon.LoginShell},
 		},
-		Update: Update{AutoCheck: false},
+		Update: Update{AutoCheck: false, AutoApply: false},
 		Daemon: Daemon{LoginShell: false},
 	}
 	adapted := withLegacyAdapter(legacyFalse)
 	if adapted.System.Update.AutoCheck == nil || *adapted.System.Update.AutoCheck || adapted.Update.AutoCheck {
 		t.Fatalf("legacy auto_check false was not adopted: canonical=%v legacy=%v", adapted.System.Update.AutoCheck, adapted.Update.AutoCheck)
+	}
+	if adapted.System.Update.AutoApply == nil || *adapted.System.Update.AutoApply || adapted.Update.AutoApply {
+		t.Fatalf("legacy auto_apply false was not adopted: canonical=%v legacy=%v", adapted.System.Update.AutoApply, adapted.Update.AutoApply)
 	}
 	if adapted.System.Daemon.LoginShell == nil || *adapted.System.Daemon.LoginShell || adapted.Daemon.LoginShell {
 		t.Fatalf("legacy login_shell false was not adopted: canonical=%v legacy=%v", adapted.System.Daemon.LoginShell, adapted.Daemon.LoginShell)

@@ -31,6 +31,17 @@ func TestV2EditTracksLeafPresenceForSourceDisplay(t *testing.T) {
 	}
 }
 
+func TestV2EditValueMutationBoundariesFindsMatchingField(t *testing.T) {
+	raw := Config{Version: 2, System: SystemConfig{Language: LanguageJapanese}, v2Explicit: true}
+	got, err := editValue(raw, EditRequest{V2: true, Scope: V2ScopeSystem, Key: "language"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, LanguageJapanese) {
+		t.Fatalf("editValue=%q, want Japanese value", got)
+	}
+}
+
 func TestV2FetchDefaultBranchAcceptsOnAndOff(t *testing.T) {
 	var raw Config
 	if err := SetV2Field(&raw, V2ScopeWorkspaceDefaults, "", "", "fetch_default_branch", "on"); err != nil {

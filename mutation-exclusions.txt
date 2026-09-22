@@ -75,8 +75,7 @@ internal/dashboard/view.go	ast-v1:d10ec7e5eac481a0d40cdd1d76f374edfaf1f4607dee36
 internal/dashboard/model.go	ast-v1:76200d7efe82bd24fd79392e18821efabd69860b22852a2b6e27e76bcd96eb0c	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異
 internal/dashboard/model.go	ast-v1:58d748163921aae72eb64b29a31dcf9a5bb560116d57a00cbe4fb201aa52be44	状態画面の項目数は0または1で選択値の上限が常に0のため、selected+delta と selected-delta は同じ結果になる等価変異
 internal/config/file.go	ast-v1:89095143387e538aeaa65bb27dc4fda1b0d27846f60213ff522a7d9e2446f33c	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
-internal/config/file.go	ast-v1:09d7c721da437db0d9f2e9e961a5bef9272084ece5da883084252d901d357b40	YAML mapping の Content は key/value の動的 map 子要素走査の境界変異は有効なNodeで同値
-internal/config/file.go	ast-v1:06daee017631e3dbf25a10ae254046f96018c3944c5ca75e7896804295282c13	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
+internal/config/file.go	ast-v1:eabe5c7813fb494357f087abd23d91ea3e5ccbcd6decec196d9fac416a981f22	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の外側走査で < と <= は有効なNodeに対して同じ key/value pair を処理する等価変異
 internal/config/fields.go	ast-v1:b5473fc558b1e8d538ff116edd7f576d7ffdd275ddbc70523c162bee78184637	system map の全キーでこの分岐の前後が同じ V2ScopeSystem/value/true を返すため、== と != は観測可能な差がない
 internal/config/unknown.go	ast-v1:fe47dfb363e68e08464cb0b97eee662a4241d7cd74838c8deaedce32ac45ebb2	YAML mapping の Content は key/value の偶数列なので、findUnknownNode の境界変異は有効なNodeで同値
 internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
@@ -89,13 +88,15 @@ internal/config/v2_edit.go	ast-v1:299f920ebe388b23a8dec9271a671ab163421ee839d5d9
 internal/config/v2.go	ast-v1:9779e8d504a49515a6f4df7c54cd3b43ea20e00d1f92620b06208d3e1403a367	固定されたlegacy section tagの走査では最終要素の直後へ到達せず、!= と == の反転は presence map の結果を変えない等価変異
 internal/config/v2_edit.go	ast-v1:1944bab3bda618aaadffd2e548095a067553f1ef154ce3d9453d103e11fa18ee	空の workspace map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
 internal/config/v2_edit.go	ast-v1:35213f340698f0f818255c064361e0930f3a7bd5aa39c4e3ab87721d412ac7c0	空の repository map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
+internal/config/v2_edit.go	ast-v1:ef30ffdd8db2d7c63b4e4144b46f37d7edced5244a5f9e3850cf57e2b2b8cfaf	repository の正規化名に対応する raw key は map 内で一意なため、同値キーを比較することはなく < と <= は観測結果が同じ等価変異
 internal/cli/bench.go	ast-v1:76ada9b0eb2e9ee90a241dfae75b26d56f0dc46f6297c69480b178e53e64955b	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
 internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63e4bb3fe59e7a0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
 internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
+internal/cli/lease.go	ast-v1:800b2af1a157128c2104a7b26855f9409503a322007e924772d1d968f049276c	PID=0 は正規化前後とも所有者なしを表す 0 を返し、<=0 と <0 の分岐結果は観測可能な戻り値を変えない等価変異
 internal/cli/resume.go	ast-v1:b3f681312930e7664d512e30bd46d59bb5cbba77768660806364dc71a977b493	末尾の値付きflagでは比較子を<から<=へ変えても次の反復がなく、codexExecIndexの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:214443b9d4955ba9f08be5859d15483f16b5b6d9f85edeebc8f31591bc7cf66d	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
 internal/cli/resume.go	ast-v1:cdc64275925e49cdb27de88f6d76b27f784bea8b536ba43c50f1e47760e113f1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
 internal/cli/resume.go	ast-v1:b2be3e54c1189dc5e611ab5aedf033ec96e55305d19e4f29a22f74782183dab1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
-internal/cli/resume_intent.go	ast-v1:4b0c5d3e46b5e1defb689897ea75b28b4502b8942fac06f3f4a0c87db192e50b	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:c62304e1b6beb6fc096b71dd69817b927880c3bde3a5fc17b85894d939fa6ee4	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、stripCodexCDArgsの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:2000534d5fd4b459c11d6c532d2beeb84ae83a2d1ee3f0a9fabc4b238029208a	exec後の値付きflagが末尾にある場合は、比較子を<=にしても次の反復がなくcodexResumeShapeの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:5ac07e81a8a9e01c815a76b7e7d227bf5cc877f915c5d251424399e06d689567	末尾の値付きglobal flagで比較子を<から<=へ変えても次の反復がなく、codexResumeShapeの結果が変わらないため

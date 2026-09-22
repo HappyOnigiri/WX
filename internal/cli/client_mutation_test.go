@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -69,6 +71,84 @@ func TestLaunchMutationBoundariesUseDiscoveryBudgetForUnboundedResumeReadiness(t
 	}
 	if methods := handler.methodsSnapshot(); !containsMethod(methods, "Resume") {
 		t.Fatalf("methods=%v, want Resume to reach the daemon", methods)
+	}
+}
+
+func TestLaunchMutationBoundariesUsesReadinessBudgetForResumeLease(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.RepositoryDefaults.Readiness.Timeout = &config.Duration{Duration: 500 * time.Millisecond}
+	handler := &resumeLaunchHandler{lease: daemon.Lease{SessionID: "resume-session", Token: "resume-token", Path: root, Ready: true}}
+	client, stop := serveResumeLaunchRPCWithConfig(t, handler, cfg)
+	defer stop()
+	if exit, relaunch := client.launch(context.Background(), launchPlan{
+		agent: "true", cwd: root, resuming: true, target: resumeTarget{WXSessionID: "wx-session"},
+	}); exit != 0 || relaunch != nil {
+		t.Fatalf("launch with bounded readiness timeout: exit=%d relaunch=%v", exit, relaunch)
+	}
+	deadlines := handler.deadlinesFor("Resume")
+	if len(deadlines) != 1 {
+		t.Fatalf("Resume deadlines=%v, want one request deadline", deadlines)
+	}
+	remaining := time.Until(deadlines[0])
+	if remaining <= 0 || remaining > time.Second {
+		t.Fatalf("Resume deadline remaining=%s, want the configured readiness budget", remaining)
+	}
+}
+
+func TestLaunchMutationBoundariesPreserveExplicitCodexArguments(t *testing.T) {
+	root := t.TempDir()
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{lease: daemon.Lease{SessionID: "resume-session", Token: "resume-token", Path: root, Ready: true}}
+	client, stop := serveResumeLaunchRPC(t, handler)
+	defer stop()
+	if exit, relaunch := client.launch(context.Background(), launchPlan{
+		agent: "codex", args: []string{"--model", "gpt-5.6-sol"}, cwd: root,
+		resuming: true, explicitResume: "wx-session", intentKind: resumeIntentNone,
+		target: resumeTarget{WXSessionID: "wx-session", AgentSessionID: "native-session"},
+	}); exit != 0 || relaunch != nil {
+		t.Fatalf("codex launch: exit=%d relaunch=%v", exit, relaunch)
+	}
+	launch := readLaunchRecord(t, record)
+	if got := launch["args"]; got != "resume --cd "+root+" native-session --model gpt-5.6-sol" {
+		t.Fatalf("Codex args=%q, want explicit arguments preserved", got)
+	}
+}
+
+func TestLaunchMutationBoundariesDoNotRenderAnEmptySetupFailureReport(t *testing.T) {
+	root := t.TempDir()
+	handler := &resumeLaunchHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: root, Ready: false}, waitReadyErrors: []error{errors.New("injected readiness failure")}}
+	client, stop := serveResumeLaunchRPC(t, handler)
+	defer stop()
+	stderr := captureStderrForLease(t, func() {
+		if exit, relaunch := client.launch(context.Background(), launchPlan{agent: "true", cwd: root, setupResolved: true}); exit != 1 || relaunch != nil {
+			t.Fatalf("launch exit=%d relaunch=%v", exit, relaunch)
+		}
+	})
+	if strings.Contains(stderr, "a workspace could not be prepared for the probe") {
+		t.Fatalf("stderr=%q, empty setup check unexpectedly rendered a probe report", stderr)
+	}
+}
+
+func TestLaunchMutationBoundariesRenderASetupFailureReportForRepositories(t *testing.T) {
+	root := t.TempDir()
+	handler := &resumeLaunchHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: root, SourceWorkspace: root, Ready: false}, waitReadyErrors: []error{errors.New("injected readiness failure")}}
+	client, stop := serveResumeLaunchRPC(t, handler)
+	defer stop()
+	stderr := captureStderrForLease(t, func() {
+		if exit, relaunch := client.launch(context.Background(), launchPlan{
+			agent: "true", cwd: root, setupResolved: true,
+			setupCheckRepositories: []daemon.SetupCheckRepository{{RelativePath: ".", MainPath: root, DirName: "repo"}},
+		}); exit != 1 || relaunch != nil {
+			t.Fatalf("launch exit=%d relaunch=%v", exit, relaunch)
+		}
+	})
+	if !strings.Contains(stderr, "a workspace could not be prepared for the probe") {
+		t.Fatalf("stderr=%q, want setup failure report", stderr)
 	}
 }
 

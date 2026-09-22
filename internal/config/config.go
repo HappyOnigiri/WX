@@ -638,10 +638,7 @@ func Validate(c *Config) error {
 	if c.Logging.Level != "debug" && c.Logging.Level != "info" && c.Logging.Level != "warn" && c.Logging.Level != "error" {
 		return errors.New("logging.level must be debug, info, warn, or error")
 	}
-	if err := c.Sessions.Validate(); err != nil {
-		return err
-	}
-	return nil
+	return c.Sessions.Validate()
 }
 
 func validateWorkspaces(workspaces map[string]Workspace) error {

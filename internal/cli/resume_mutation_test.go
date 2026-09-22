@@ -12,6 +12,11 @@ import (
 
 const resumeParserTestTimeout = time.Second
 
+type resumeShapeResult struct {
+	location codexResumeLocation
+	ok       bool
+}
+
 // runResumeParserWithTimeout は変異で parser が無限ループしても、テスト全体を待たせない。
 // 正常な parser は即時に返るため、ここでの失敗は変異を KILLED と判定させる。
 func runResumeParserWithTimeout[T any](t *testing.T, fn func() T) T {
@@ -53,17 +58,30 @@ func TestCodexResumeShapeKeepsTerminalFlagBoundaries(t *testing.T) {
 		{name: "exec flag", args: []string{"exec", "--model"}, want: codexResumeLocation{resumeIndex: -1, exec: true, prefixEnd: 2}, ok: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := codexResumeShape(tt.args)
-			if ok != tt.ok || !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("codexResumeShape(%v)=(%+v, %v), want (%+v, %v)", tt.args, got, ok, tt.want, tt.ok)
+			result := runResumeParserWithTimeout(t, func() resumeShapeResult {
+				location, ok := codexResumeShape(tt.args)
+				return resumeShapeResult{location: location, ok: ok}
+			})
+			if result.ok != tt.ok || !reflect.DeepEqual(result.location, tt.want) {
+				t.Fatalf("codexResumeShape(%v)=(%+v, %v), want (%+v, %v)", tt.args, result.location, result.ok, tt.want, tt.ok)
 			}
 		})
 	}
 }
 
+func TestCodexResumeShapeSkipsExecFlagValuesBeforeResume(t *testing.T) {
+	got, ok := codexResumeShape([]string{"exec", "--model", "opus", "resume"})
+	want := codexResumeLocation{resumeIndex: 3, exec: true, prefixEnd: 3}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("codexResumeShape(exec flag value)=(%+v, %v), want (%+v, true)", got, ok, want)
+	}
+}
+
 // 末尾の値付き flag は値を持たないまま agent 側へ渡し、入力外を参照しない。
 func TestParseCodexResumeTailKeepsTerminalValueFlag(t *testing.T) {
-	got := parseCodexResumeTail([]string{"--model"})
+	got := runResumeParserWithTimeout(t, func() resumeIntent {
+		return parseCodexResumeTail([]string{"--model"})
+	})
 	want := resumeIntent{Kind: resumeIntentPicker, Rest: []string{"--model"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseCodexResumeTail([--model])=%#v, want %#v", got, want)
@@ -72,7 +90,9 @@ func TestParseCodexResumeTailKeepsTerminalValueFlag(t *testing.T) {
 
 // 末尾の --cd は取り除くだけで、後続の値がない入力を読み飛ばさない。
 func TestParseCodexResumeTailKeepsTerminalCDFlag(t *testing.T) {
-	got := parseCodexResumeTail([]string{"--cd"})
+	got := runResumeParserWithTimeout(t, func() resumeIntent {
+		return parseCodexResumeTail([]string{"--cd"})
+	})
 	want := resumeIntent{Kind: resumeIntentPicker}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseCodexResumeTail([--cd])=%#v, want %#v", got, want)
@@ -81,7 +101,10 @@ func TestParseCodexResumeTailKeepsTerminalCDFlag(t *testing.T) {
 
 // resume の前置から末尾の --cd を除いても空の引数列を nil として返す。
 func TestStripCodexCDArgsKeepsTerminalCDFlag(t *testing.T) {
-	if got := stripCodexCDArgs([]string{"--cd"}); got != nil {
+	got := runResumeParserWithTimeout(t, func() []string {
+		return stripCodexCDArgs([]string{"--cd"})
+	})
+	if got != nil {
 		t.Fatalf("stripCodexCDArgs([--cd])=%v, want nil", got)
 	}
 }
@@ -95,8 +118,17 @@ func TestCodexExecIndexReturnsMinusOneForEmptyArguments(t *testing.T) {
 
 // exec 前置の末尾に値付き flag だけがあっても、存在しない値を追加で読まない。
 func TestCodexExecIndexKeepsTerminalValueFlag(t *testing.T) {
-	if got := codexExecIndex([]string{"--model"}); got != -1 {
+	got := runResumeParserWithTimeout(t, func() int {
+		return codexExecIndex([]string{"--model"})
+	})
+	if got != -1 {
 		t.Fatalf("codexExecIndex([--model])=%d, want -1", got)
+	}
+}
+
+func TestCodexExecIndexSkipsValueBeforeExec(t *testing.T) {
+	if got := codexExecIndex([]string{"--model", "opus", "exec"}); got != 2 {
+		t.Fatalf("codexExecIndex([--model opus exec])=%d, want 2", got)
 	}
 }
 

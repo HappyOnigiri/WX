@@ -49,6 +49,18 @@ func TestBenchMutationBoundariesPreserveOutputContracts(t *testing.T) {
 				t.Fatalf("padBenchLabel(%q)=%q", label, got)
 			}
 		}
+		if got := padBenchLabel("short"); len(got) != benchSummaryLabelWidth {
+			t.Fatalf("padBenchLabel(short)=%q (width %d), want width %d", got, len(got), benchSummaryLabelWidth)
+		}
+	})
+
+	t.Run("retirement is shown only for cold runs", func(t *testing.T) {
+		stdout := captureLeaseStdout(t, func() {
+			printBenchRunLanguage(1, 1, BenchRun{Source: "warm", RetiredStandby: 1}, i18n.English)
+		})
+		if strings.Contains(stdout, "retired") {
+			t.Fatalf("stdout=%q, warm run must not report retired standby", stdout)
+		}
 	})
 
 	t.Run("zero-count phase keeps its measured zero", func(t *testing.T) {
@@ -60,6 +72,16 @@ func TestBenchMutationBoundariesPreserveOutputContracts(t *testing.T) {
 		})
 		if !strings.Contains(stdout, "checkout") || !strings.Contains(stdout, "0.000s") || strings.Contains(stdout, "checkout                      -") {
 			t.Fatalf("stdout=%q, want a zero-second single-count phase", stdout)
+		}
+	})
+	t.Run("zero-time multi-count phase is shown as a count-only row", func(t *testing.T) {
+		stdout := captureLeaseStdout(t, func() {
+			printBenchRunLanguage(1, 1, BenchRun{Source: "cold", Measurement: &daemon.PrepareMeasurement{
+				Phases: []daemon.PreparePhase{{Name: "checkout", Count: 2}},
+			}}, i18n.English)
+		})
+		if !strings.Contains(stdout, "checkout") || !strings.Contains(stdout, "-") {
+			t.Fatalf("stdout=%q, want count-only phase", stdout)
 		}
 	})
 
@@ -144,6 +166,37 @@ func TestBenchMutationBoundariesPreserveUsageAndRetirement(t *testing.T) {
 		t.Fatalf("retired=%d err=%v, want two retired standby slots", retired, err)
 	}
 	_ = standby
+}
+
+func TestBenchSlotUsageMutationBoundariesKeepAUsageResultAfterTheDeadline(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.slots = benchSlotUsageReply()
+	oldTimeout := benchUsageTimeout
+	benchUsageTimeout = 0
+	t.Cleanup(func() { benchUsageTimeout = oldTimeout })
+	if got := client.benchSlotUsage(ctx, "session", time.Now().Add(-time.Minute)); got == nil {
+		t.Fatal("benchSlotUsage returned nil for a measured slot even after the deadline")
+	}
+}
+
+func TestBenchRunsMutationBoundariesWaitOnlyBetweenMeasuredRuns(t *testing.T) {
+	client, handler, root, ctx := leaseFixture(t)
+	_, _ = client.benchRuns(ctx, root, root, BenchOptions{Runs: 1, Configs: []config.PrepareOverride{{}}})
+	handler.mu.Lock()
+	methods := append([]string(nil), handler.methods...)
+	handler.mu.Unlock()
+	retire, status := -1, -1
+	for i, method := range methods {
+		if method == "RetireStandby" && retire < 0 {
+			retire = i
+		}
+		if method == "Status" && status < 0 {
+			status = i
+		}
+	}
+	if status >= 0 && (retire < 0 || status < retire) {
+		t.Fatalf("methods=%v, Status must not precede the first measured run", methods)
+	}
 }
 
 // Slots の失敗は、次の測定を待たずにその回を使用量なしとして終える。

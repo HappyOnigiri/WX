@@ -28,7 +28,7 @@ const benchIdlePoll = 500 * time.Millisecond
 // benchUsageTimeout は準備した slot の使用量が載るのを待つ上限である。
 // daemon は準備直後にその slot だけを background で測るため、返却前に少しだけ待つ必要がある。
 // 上限内に載らなかった回は時間だけの行として出す。測れなかったのは観測側の遅れで、測った時間は有効である。
-const benchUsageTimeout = 90 * time.Second
+var benchUsageTimeout = 90 * time.Second
 
 // benchUsagePoll は使用量の測定が載るのを待つ間隔である。
 const benchUsagePoll = 500 * time.Millisecond

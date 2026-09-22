@@ -150,7 +150,7 @@ func SetField(c *Config, key, value string) error {
 	if err := parseInto(field, value); err != nil {
 		return err
 	}
-	if c.present == nil {
+	if len(c.present) == 0 {
 		c.present = map[string]bool{}
 	}
 	c.present[key] = true

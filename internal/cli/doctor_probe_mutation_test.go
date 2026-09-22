@@ -62,6 +62,12 @@ func TestProbeSlotViewMutationBoundariesReturnMeasuredSlot(t *testing.T) {
 	if got.Measurement != measured.Measurement || got.SessionID != measured.SessionID {
 		t.Fatalf("slot=%+v, want measured slot %+v", got, measured)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got = client.probeSlotView(ctx, "slot")
+	if got.SlotID != measured.SlotID || got.Measurement != measured.Measurement {
+		t.Fatalf("slot lookup by slot ID=%+v, want measured slot %+v", got, measured)
+	}
 }
 
 // Slots の応答が短時間で返る場合、probeUsageTimeout の単位を壊す変異は
