@@ -325,8 +325,7 @@ func v2ListSeed(c *Config, scope, root, rel, key string) ([]string, error) {
 	if normalized := effective; NormalizePaths(&normalized) == nil {
 		effective = normalized
 		canonical, err := canonicalPath(root)
-		switch err {
-		case nil:
+		if errors.Is(err, nil) {
 			root = canonical
 		}
 	}

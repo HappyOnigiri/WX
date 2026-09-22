@@ -147,13 +147,10 @@ func SetField(c *Config, key, value string) error {
 	if !field.IsValid() {
 		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
 	}
-	switch err := parseInto(field, value); err {
-	case nil:
-	default:
+	if err := parseInto(field, value); err != nil {
 		return err
 	}
-	switch c.present {
-	case nil:
+	if len(c.present) == 0 {
 		c.present = map[string]bool{}
 	}
 	c.present[key] = true
