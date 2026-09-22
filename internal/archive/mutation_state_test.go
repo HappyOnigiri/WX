@@ -121,6 +121,8 @@ func TestMutationVerifyRestoredSubmoduleFailures(t *testing.T) {
 				switch args[0] {
 				case "rev-parse":
 					return snapshot.HeadOID, nil
+				case "diff-index":
+					return "", nil
 				case "write-tree":
 					if len(env) > 0 {
 						if test.failFinal {
@@ -144,6 +146,31 @@ func TestMutationVerifyRestoredSubmoduleFailures(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("force-added collection", func(t *testing.T) {
+		value := func(env []string, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "diff-index" {
+				return "", errors.New("diff-index failed")
+			}
+			switch args[0] {
+			case "rev-parse":
+				return snapshot.HeadOID, nil
+			case "write-tree":
+				if len(env) == 0 {
+					return snapshot.IndexTreeOID, nil
+				}
+				return snapshot.WorktreeTreeOID, nil
+			default:
+				return "", errors.New("unexpected git value command")
+			}
+		}
+		run := func(_ []string, _ []byte, _ ...string) (gitx.Result, error) {
+			return gitx.Result{}, nil
+		}
+		if err := verifyRestoredSubmodule(value, run, snapshot); err == nil {
+			t.Fatal("verifyRestoredSubmodule accepted a force-added collection failure")
+		}
+	})
 }
 
 // TestMutationDeleteSubmoduleCapsuleRefsChecksExpectedOID は capsule ref の欠落を
@@ -172,6 +199,10 @@ func TestMutationDeleteSubmoduleCapsuleRefsChecksExpectedOID(t *testing.T) {
 	// 既に消えた ref は GC/再実行との競合として成功扱いにする。
 	if err := manager.deleteSubmoduleCapsuleRefs(context.Background(), repo, []state.SubmoduleSnapshot{snapshot}); err != nil {
 		t.Fatalf("missing capsule ref was not idempotent: %v", err)
+	}
+	installGitFaultWithExitCode(t, " show-ref --verify --hash "+ref+" ", 1, 1)
+	if err := manager.deleteSubmoduleCapsuleRefs(context.Background(), repo, []state.SubmoduleSnapshot{snapshot}); err != nil {
+		t.Fatalf("exit code 1 for a missing capsule ref was not idempotent: %v", err)
 	}
 
 	gitCommand(t, moduleDir, "update-ref", ref, oid)

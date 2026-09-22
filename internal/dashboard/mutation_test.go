@@ -114,6 +114,80 @@ func TestMutationExecutionRefreshRestoresARepositorySelection(t *testing.T) {
 	}
 }
 
+func TestMutationExecutionRefreshCreatesSelectedWorkspaceScope(t *testing.T) {
+	const workspace = "/tmp/project"
+	cfg := config.DefaultsV2()
+	cfg.Workspaces[workspace] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	workspaceIndex := -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeWorkspace && environment.target == workspace && !environment.repositoryDefaults {
+			workspaceIndex = index
+			break
+		}
+	}
+	if workspaceIndex < 0 {
+		t.Fatal("workspace environment is missing")
+	}
+	m.tab, m.settingsOpen, m.settingsEnv, m.target = 2, true, workspaceIndex, workspace
+	updated, _ := m.Update(executionMsg{config: config.Config{Version: 2}})
+	got := updated.(model)
+	if _, ok := got.opts.Config.Workspaces[workspace]; !ok {
+		t.Fatalf("refreshed workspace map=%v, want selected workspace initialized", got.opts.Config.Workspaces)
+	}
+}
+
+func TestMutationExecutionRefreshCreatesSelectedRepositoryScope(t *testing.T) {
+	const workspace = "/tmp/project"
+	cfg := config.DefaultsV2()
+	cfg.Workspaces[workspace] = config.Workspace{Repositories: map[string]config.Repository{"backend": {}, "frontend": {}}}
+	m := newModel(context.Background(), Options{Config: cfg})
+	repositoryIndex := -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeRepository && environment.target == workspace && environment.repository == "backend" {
+			repositoryIndex = index
+			break
+		}
+	}
+	if repositoryIndex < 0 {
+		t.Fatal("repository environment is missing")
+	}
+	m.tab, m.settingsOpen, m.settingsEnv, m.target = 2, true, repositoryIndex, workspace
+	refreshed := config.Config{Version: 2, Workspaces: map[string]config.Workspace{
+		workspace:    {},
+		"/tmp/other": {},
+	}}
+	updated, _ := m.Update(executionMsg{config: refreshed})
+	got := updated.(model)
+	workspaceConfig := got.opts.Config.Workspaces[workspace]
+	if _, ok := workspaceConfig.Repositories[""]; ok {
+		t.Fatalf("refreshed repositories=%v, did not want an empty repository from workspace environment", workspaceConfig.Repositories)
+	}
+}
+
+func TestMutationExecutionRefreshMatchesEveryEnvironmentQualifier(t *testing.T) {
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/alpha"] = config.Workspace{Repositories: map[string]config.Repository{"backend": {}, "frontend": {}}}
+	cfg.Workspaces["/tmp/zeta"] = config.Workspace{Repositories: map[string]config.Repository{"backend": {}, "frontend": {}}}
+	base := newModel(context.Background(), Options{Config: cfg})
+	for index, want := range base.configEnvironments() {
+		if want.scope != config.V2ScopeWorkspace && want.scope != config.V2ScopeRepository {
+			continue
+		}
+		m := newModel(context.Background(), Options{Config: cfg})
+		m.tab, m.settingsOpen, m.settingsEnv, m.target = 2, true, index, want.target
+		updated, _ := m.Update(executionMsg{config: cfg})
+		got := updated.(model)
+		if got.settingsEnv >= len(got.configEnvironments()) {
+			t.Fatalf("scope=%q target=%q repository=%q settingsEnv=%d out of range", want.scope, want.target, want.repository, got.settingsEnv)
+		}
+		selected := got.configEnvironments()[got.settingsEnv]
+		if selected.scope != want.scope || selected.target != want.target || selected.repository != want.repository || selected.repositoryDefaults != want.repositoryDefaults {
+			t.Fatalf("selected=%+v, want exact environment %+v", selected, want)
+		}
+	}
+}
+
 // TestMutationItemCountCoversEmptyAndSetupMenus は、tab と settingsOpen の分岐、および
 // setup item と固定メニューの加算を、実際の件数で比較する。
 func TestMutationItemCountCoversEmptyAndSetupMenus(t *testing.T) {
@@ -205,13 +279,16 @@ func TestMutationChooseSeparatesSetupAndArgumentChoices(t *testing.T) {
 }
 
 func TestMutationActivateUsesTheSetupBoundaryBeforeFixedMenu(t *testing.T) {
-	setupStep := setup.Step{ID: "hooks", Title: i18n.Message{ID: "wx.setup.item.hooks"}, Options: []setup.Action{setup.ActionKeep}}
+	setupStep := setup.Step{ID: "hooks", Title: i18n.Message{ID: "wx.setup.item.hooks"}, Default: setup.ActionManual, Options: []setup.Action{setup.ActionKeep, setup.ActionManual}}
 	m := newModel(context.Background(), Options{Config: config.Defaults(), Setup: []setup.Step{setupStep}})
 	m.tab, m.selected = 5, 0
 	updated, _ := m.activate()
 	got := updated.(model)
 	if got.mode != modeChoice || got.pending.command != "setup" || got.pending.defaultArgs[1] != "hooks" {
 		t.Fatalf("setup item at boundary state=%+v, want setup choice", got)
+	}
+	if got.choice != 1 || got.choices[got.choice].value != string(setup.ActionManual) {
+		t.Fatalf("setup default choice=%d choices=%+v, want manual at index 1", got.choice, got.choices)
 	}
 
 	m.selected = len(m.setupItems())

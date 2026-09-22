@@ -124,6 +124,44 @@ func TestPickerEnsureVisibleRevealsBoundaryRow(t *testing.T) {
 	}
 }
 
+func TestPickerEnsureVisibleClampsSelectionAndOffsetAtBothBoundaries(t *testing.T) {
+	items := make([]scanner.Session, 8)
+	for i := range items {
+		items[i] = scanner.Session{Tool: "claude", SessionID: string(rune('a' + i)), Title: "session"}
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	m.height = 13 // visibleRows() が 3 になる高さ
+	m.selected = len(m.visible)
+	m.offset = len(m.visible) + 4
+	m.ensureVisible()
+	if m.selected != len(m.visible)-1 || m.offset != len(m.visible)-3 {
+		t.Fatalf("upper clamp selected=%d offset=%d, want %d/%d", m.selected, m.offset, len(m.visible)-1, len(m.visible)-3)
+	}
+
+	m.selected = 2
+	m.offset = 4
+	m.ensureVisible()
+	if m.selected != 2 || m.offset != 2 {
+		t.Fatalf("backward reveal selected=%d offset=%d, want 2/2", m.selected, m.offset)
+	}
+}
+
+func TestPickerViewMarksSelectedItemAndStatus(t *testing.T) {
+	m := newPickerModel([]scanner.Session{
+		{Tool: "claude", SessionID: "first", Title: "first"},
+		{Tool: "claude", SessionID: "second", Title: "second"},
+	}, PickOptions{Now: fixedNow})
+	m.selected = 1
+	m.statusID = "tui.picker.no_match"
+	view := m.View().Content
+	if !strings.Contains(view, "❯ second") || strings.Contains(view, "❯ first") {
+		t.Fatalf("selected marker is wrong: %q", view)
+	}
+	if !strings.Contains(view, "! no conversations match the current filter") {
+		t.Fatalf("status line missing: %q", view)
+	}
+}
+
 func TestPickerEnterRejectsInUseAndReturnsTarget(t *testing.T) {
 	items := []scanner.Session{
 		{Tool: "claude", SessionID: "busy-id", Title: "busy", StableID: "busy"},

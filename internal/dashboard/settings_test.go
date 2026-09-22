@@ -188,6 +188,51 @@ func TestConfigItemsIgnoresOutOfRangeSettingsEnvironment(t *testing.T) {
 	}
 }
 
+func TestV2ConfigItemsSeparateWorkspaceAndRepositoryDefaults(t *testing.T) {
+	const workspace = "/tmp/project"
+	cfg := config.DefaultsV2()
+	cfg.Workspaces[workspace] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	workspaceIndex, defaultsIndex := -1, -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeWorkspace && environment.target == workspace {
+			if environment.repositoryDefaults {
+				defaultsIndex = index
+			} else {
+				workspaceIndex = index
+			}
+		}
+	}
+	if workspaceIndex < 0 || defaultsIndex < 0 {
+		t.Fatalf("workspace environments missing: workspace=%d defaults=%d", workspaceIndex, defaultsIndex)
+	}
+	for _, test := range []struct {
+		name       string
+		index      int
+		nestedWant bool
+	}{
+		{name: "workspace", index: workspaceIndex},
+		{name: "repository defaults", index: defaultsIndex, nestedWant: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m.settingsOpen, m.settingsEnv = true, test.index
+			items := m.configItems()
+			if len(items) == 0 {
+				t.Fatal("config items are empty")
+			}
+			for _, item := range items {
+				nested := strings.HasPrefix(item.Key, "repository_defaults.")
+				if nested != test.nestedWant {
+					t.Fatalf("item %q nested=%v, want %v", item.Key, nested, test.nestedWant)
+				}
+				if item.Key == "submodules" {
+					t.Fatal("workspace config exposed the submodules field")
+				}
+			}
+		})
+	}
+}
+
 func TestV2ConfigEnvironmentsSkipRepositoryMenuForSingleMember(t *testing.T) {
 	cfg := config.DefaultsV2()
 	cfg.Workspaces["/tmp/single"] = config.Workspace{Discovered: true, Repositories: map[string]config.Repository{

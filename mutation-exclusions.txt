@@ -117,3 +117,7 @@ internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
 internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
 internal/daemon/usage.go	ast-v1:16c8791c91bfe238d55a24852342e93ddf39d8bb3d24a9ed843c08e5fd5cf083	map の初期容量は内容・len・戻り値を変えないため、previous と measured の長さの加算を減算へ変えても観測可能な差がない
+internal/setup/message.go	ast-v1:a92297fd49cfed9993f1883a6e9997c4fdc97d46642859a7fdadd55e195e07f7	pairs の map 初期容量だけを決める除算で、乗算へ変えても収集する key/value と戻り値は変わらないため等価変異
+internal/sessions/scanner/parse.go	ast-v1:fce68a45baeb42b6d093187f4b2e30caabb0b38845706e17db43fdbc282efbe2	JSONL reader の初期 buffer サイズだけが変わり、ReadBytes の内容・解析結果・エラー契約は変わらないため等価変異
+internal/pool/branch.go	ast-v1:8ab1ec6b7e5034a2ac9fb726e1c1fdd8e228e333308e5ef0f51e5c66914c6b5c	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異
+internal/pool/branch.go	ast-v1:6b1342fc7dcf20dd150c56e9f51b466de29524dd7d1afc2e57c5a39ced3ded77	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異

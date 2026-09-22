@@ -91,6 +91,17 @@ func TestParseSnapshotLFSPointerBatchAcceptsZeroByteBlob(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotLFSPointerBatchSkipsMissingBlob(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	pointers, err := parseSnapshotLFSPointerBatch(oid+" missing\n", []string{oid})
+	if err != nil {
+		t.Fatalf("missing blob returned an error: %v", err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("missing blob produced pointers=%v", pointers)
+	}
+}
+
 func TestParseSnapshotLFSPointerBatchAcceptsMaximumSizedPointerBlob(t *testing.T) {
 	oid := strings.Repeat("a", 40)
 	pointerData := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("b", 64) + "\nsize 42\n"

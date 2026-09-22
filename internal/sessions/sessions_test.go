@@ -114,6 +114,28 @@ func TestListSortsEqualMtimeByStableID(t *testing.T) {
 	}
 }
 
+func TestListAcceptsCodexSessions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	codexRoot := filepath.Join(root, "codex")
+	if err := os.MkdirAll(codexRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "019e8bd5-4230-7403-b1aa-b48f42e564dc"
+	path := filepath.Join(codexRoot, "rollout-2026-09-06T00-00-00-"+id+".jsonl")
+	body := `{"type":"session_meta","payload":{"id":"` + id + `","cwd":"/workspace"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":"Resume this"}}
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Paths: config.PathsConfig{Codex: config.ToolPathsConfig{Sessions: []string{codexRoot}}}}
+	items, err := list(context.Background(), cfg, PickOptions{Tool: "codex"})
+	if err != nil || len(items) != 1 || items[0].session.Tool != "codex" {
+		t.Fatalf("codex list=%+v err=%v, want one codex session", items, err)
+	}
+}
+
 func TestContinueReadsEachInvocationAndExcludesInUse(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

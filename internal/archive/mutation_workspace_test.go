@@ -165,6 +165,67 @@ func TestMutationWorkspaceRestoreEntryBoundaries(t *testing.T) {
 	if err := restoreWorkspaceEntry(closed, mutationTarReader(t, directoryHeader, ""), &directoryHeader, nil, map[string]byte{}); err == nil {
 		t.Fatal("closed root accepted directory restore")
 	}
+
+	if err := os.Chmod(rootPath, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(rootPath, 0o700) })
+	permissionHeader := tar.Header{Name: "permission-denied", Typeflag: tar.TypeDir, Mode: 0o700}
+	if err := restoreWorkspaceEntry(root, mutationTarReader(t, permissionHeader, ""), &permissionHeader, nil, map[string]byte{}); err == nil {
+		t.Fatal("directory creation failure was accepted")
+	}
+}
+
+type mutationErrorReader struct {
+	data   []byte
+	failAt int
+	offset int
+	err    error
+}
+
+func (reader *mutationErrorReader) Read(p []byte) (int, error) {
+	if reader.offset >= reader.failAt {
+		return 0, reader.err
+	}
+	n := len(p)
+	if remaining := reader.failAt - reader.offset; n > remaining {
+		n = remaining
+	}
+	copy(p[:n], reader.data[reader.offset:reader.offset+n])
+	reader.offset += n
+	return n, nil
+}
+
+func TestMutationWorkspaceRestoreRegularFilePreservesReaderError(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	const payload = "payload"
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	header := tar.Header{Name: "payload", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(payload))}
+	if err := writer.WriteHeader(&header); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("archive stream interrupted")
+	stream := &mutationErrorReader{data: archive.Bytes(), failAt: 512 + len(payload) - 1, err: wantErr}
+	reader := tar.NewReader(stream)
+	if _, err := reader.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreWorkspaceRegularFile(root, reader, "payload", "payload", &header); !errors.Is(err, wantErr) {
+		t.Fatalf("restore error=%v want %v", err, wantErr)
+	}
 }
 
 // TestMutationWorkspaceArchiveRejectsReplacement は WalkDir の entry を取得した後に
@@ -301,5 +362,59 @@ func TestMutationWorkspaceRestoreVerifiedWorkspaceRejectsClosedArchive(t *testin
 	}
 	if err := RestoreVerifiedWorkspace(context.Background(), verified, bundleRoot, ownershipRoot, owner, nil); err == nil {
 		t.Fatal("closed archive descriptor was accepted")
+	}
+}
+
+func TestMutationDeleteWorkspaceSnapshotChecksRootAfterRemoval(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "delete-root-check", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("root changed after archive removal")
+	verifyCalls := 0
+	verifyRoot := func(string, *os.Root) error {
+		verifyCalls++
+		if verifyCalls == 2 {
+			return wantErr
+		}
+		return nil
+	}
+	if err := deleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, verifyRoot, openWorkspaceSnapshotDirectory, syncWorkspaceSnapshotDirectory); !errors.Is(err, wantErr) {
+		t.Fatalf("delete error=%v want %v", err, wantErr)
+	}
+}
+
+func TestMutationDeleteWorkspaceSnapshotPropagatesDirectorySyncFailure(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "delete-sync-check", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("workspace snapshot directory sync failed")
+	openDirectory := func(*os.Root) (*os.File, error) {
+		return os.Open(os.DevNull)
+	}
+	syncDirectory := func(*os.File) error { return wantErr }
+	if err := deleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, verifyPinnedRootPath, openDirectory, syncDirectory); !errors.Is(err, wantErr) {
+		t.Fatalf("delete error=%v want %v", err, wantErr)
 	}
 }

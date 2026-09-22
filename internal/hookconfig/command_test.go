@@ -71,6 +71,39 @@ func TestSplitHookCommandRejectsDanglingDoubleQuotedEscape(t *testing.T) {
 	}
 }
 
+func TestSplitHookCommandMarksLiteralExpansionsAtFieldBoundaries(t *testing.T) {
+	for _, command := range []string{
+		`\~/wx hook SessionStart`,
+		`\$HOME/wx hook SessionStart`,
+		`'$HOME/wx' hook SessionStart`,
+		`"~/wx" hook SessionStart`,
+		`"foo~/wx" hook SessionStart`,
+	} {
+		fields, ok := splitHookCommand(command)
+		wantExpansion := command != `"foo~/wx" hook SessionStart`
+		if !ok || len(fields) != 3 {
+			t.Fatalf("splitHookCommand(%q)=%v,%v, want 3 fields", command, fields, ok)
+		}
+		if fields[0].literalExpansion != wantExpansion {
+			t.Fatalf("splitHookCommand(%q) literalExpansion=%v want %v", command, fields[0].literalExpansion, wantExpansion)
+		}
+	}
+	fields, ok := splitHookCommand(`/tmp/wx\~/wx hook SessionStart`)
+	if !ok || len(fields) != 3 || fields[0].literalExpansion {
+		t.Fatalf("a mid-field tilde was marked as an expansion: %v,%v", fields, ok)
+	}
+}
+
+func TestSplitHookCommandAcceptsAnEscapedQuoteInDoubleQuotes(t *testing.T) {
+	fields, ok := splitHookCommand(`"/bin/wx\"" hook SessionStart`)
+	if !ok || len(fields) != 3 {
+		t.Fatalf("splitHookCommand escaped quote=%v,%v, want 3 fields", fields, ok)
+	}
+	if fields[0].value != `/bin/wx"` {
+		t.Fatalf("splitHookCommand escaped quote field=%q, want a quoted executable field", fields[0].value)
+	}
+}
+
 func TestResolveHookExecutableRejectsBareWXWhenUnavailable(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if resolved, ok := resolveHookExecutable("wx"); ok || resolved != "" {

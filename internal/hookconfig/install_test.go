@@ -1,6 +1,7 @@
 package hookconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,6 +330,21 @@ func TestWriteHookConfigReturnsRenameFailure(t *testing.T) {
 	}
 	if err := writeHookConfig(target, false, []byte("{}\n")); err == nil {
 		t.Fatal("rename onto a directory unexpectedly succeeded")
+	}
+}
+
+func TestWriteHookConfigReturnsDirectorySyncOpenFailure(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "hooks.json")
+	want := errors.New("directory open failed")
+	err := writeHookConfigWithOpen(target, false, []byte("{}\n"), func(string) (*os.File, error) {
+		return nil, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("writeHookConfigWithOpen error=%v, want %v", err, want)
+	}
+	if got := readTestFile(t, target); got != "{}\n" {
+		t.Fatalf("rename completed with %q, want written document", got)
 	}
 }
 
