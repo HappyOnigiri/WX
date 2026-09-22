@@ -147,7 +147,7 @@ var configCatalog = map[string]Entry{
 	"config.update.auto_check.impact":      {EN: "When disabled, wx never contacts GitHub on its own; wx update still checks when you run it yourself, and nothing is installed automatically either.", JA: "無効にすると、wx が自分から GitHub へ接続することはなくなり、自動での導入も行われません。自分で実行する wx update は無効でも確認します。"},
 
 	"config.update.auto_apply.name":        {EN: "Install new versions automatically", JA: "新しいバージョンを自動で導入する"},
-	"config.update.auto_apply.description": {EN: "Whether the daemon installs a newer wx by itself, which it starts only while nothing is leased so that no running agent is disturbed.", JA: "新しい wx を daemon が自分で導入するかどうかです。作業中のエージェントを妨げないよう、貸出が 1 件も無いときにだけ開始します。"},
+	"config.update.auto_apply.description": {EN: "Whether the daemon installs a newer wx by itself. It begins only while nothing is leased; the download, the replacement and the daemon restart then run after that point.", JA: "新しい wx を daemon が自分で導入するかどうかです。開始するのは貸出が 1 件も無いときに限られ、取得と置換、daemon の入れ替えはその後に行われます。"},
 	"config.update.auto_apply.impact":      {EN: "When disabled, a new release is still announced and you install it yourself with wx update --apply; automatic installs also stop when the automatic check is disabled.", JA: "無効にしても新しいバージョンのお知らせは出続け、導入は自分で実行する wx update --apply で行います。自動確認を無効にした場合も自動の導入は行われません。"},
 
 	"config.daemon.login_shell.name":        {EN: "Start the daemon through a login shell", JA: "daemon をログインシェルから起動する"},

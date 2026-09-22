@@ -96,6 +96,8 @@ install.shが自分で`wx daemon restart`を呼んで親daemonを止めるため
 
 自動適用を始めるのは貸出0件のアイドル時に限る。
 利用者が指示していない置換なので、明示的なrestart/stopより強い条件を置く（[daemonの診断と再起動](daemon-diagnostics.md)）。
+条件が効くのは開始時点だけで、取得と置換、daemonの入れ替えは開始後に走る。
+その間に取られた貸出は、明示的な`wx daemon restart`と同じ扱いになる。
 同じ版を繰り返し適用しないためのclaimは案内のclaimとは別に持つ。
 案内権をdaemonが消費すると、対話起動での案内がその版について出なくなるためである。
 逆に`auto_apply`を無効にしても案内は出続け、利用者は`wx update --apply`を自分で実行できる。
