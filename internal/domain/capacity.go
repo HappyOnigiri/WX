@@ -12,9 +12,7 @@ import (
 // 利用できる空き容量と volume 識別子を返す。path を開き直さず pin 済み descriptor を使う。
 // f_bfree ではなく f_bavail を使い、予約領域を利用可能容量へ含めない。
 func VolumeFreeBytes(file *os.File) (string, int64, error) {
-	return volumeFreeBytes(file, volumeIdentity, func(fd int, fs *unix.Statfs_t) error {
-		return unix.Fstatfs(fd, fs)
-	})
+	return volumeFreeBytes(file, volumeIdentity, unix.Fstatfs)
 }
 
 func volumeFreeBytes(file *os.File, identify func(int) (string, error), statfs func(int, *unix.Statfs_t) error) (string, int64, error) {
