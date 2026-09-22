@@ -86,9 +86,9 @@ func (m *Manager) updateApplyIdle(ctx context.Context) bool {
 // maybeApplyUpdate は記録済みの確認結果に新版があれば、貸出 0 件のアイドルで適用を始める。
 // 始めるのは `wx update --apply` の起動までで、ダウンロード・checksum 検証・atomic な置換は install.sh が、
 // 置換後の daemon の入れ替えは detectExecutableReplacement が持つ。
-
 // 確認の 6 時間間引きには乗せず保守の一巡ごとに判定する。確認した時点で貸出中だった新版を、
 // 次の一巡で拾えるようにするためである。同じ版を繰り返し適用しないための歯止めは claim が持つ。
+// commentlint:allow-long -- 起動までの責務の切れ目と、間引きに乗せない理由をひと続きで示す必要がある
 func (m *Manager) maybeApplyUpdate(ctx context.Context) {
 	probe := m.resolveUpdateProbe()
 	if !m.updateApplyEnabled(probe) {

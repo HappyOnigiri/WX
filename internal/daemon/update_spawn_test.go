@@ -13,9 +13,9 @@ import (
 
 // TestSpawnDetachedLeavesTheParentSession は自動適用の子が親と別 session で動くことを固定する。
 // 同じ session に残ると、install.sh が `wx daemon restart` で親 daemon を止めた瞬間に子も落ちる。
-
 // 出力が log へ向くこと、終了した子が zombie で残らないことも併せて見る。
 // 子 process と reaper goroutine は process 全体へ影響するため、並行実行はしない。
+// commentlint:allow-long -- session 分離の理由と、同じテストが併せて見る範囲を続けて示す
 func TestSpawnDetachedLeavesTheParentSession(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, updateApplyLogName)

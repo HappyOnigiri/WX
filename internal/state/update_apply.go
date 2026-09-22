@@ -17,9 +17,9 @@ const UpdateApplyRetryInterval = 6 * time.Hour
 // ClaimUpdateApply は version の自動適用を始める権利を 1 つの呼び出しへ渡す。初回は行を足せた呼び出しだけ、
 // 2 回目以降は試行上限と再試行間隔を満たす行を更新できた呼び出しだけが権利を得る。権利は子 process の
 // 起動直前に取り、起動が失敗しても試行として残す。残さないと失敗が続く版で起動を繰り返す。
-
 // 戻り値は権利を得た呼び出しにとっての試行回数で、得られなければ 0 である。
 // 呼び出し側はこれが UpdateApplyMaxAttempts と等しいときを最後の試行として扱える。
+// commentlint:allow-long -- 権利を得る条件と、戻り値の意味の両方が呼び出し側に必要である
 func (s *Store) ClaimUpdateApply(ctx context.Context, version string, now time.Time) (int, error) {
 	if version == "" {
 		return 0, nil
