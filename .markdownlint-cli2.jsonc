@@ -1,4 +1,6 @@
 {
+  // Git管理外のローカル専用Markdownを検査対象から外す。除外の正本は.gitignoreとする。
+  "gitignore": true,
   "config": {
     "MD013": false,
     "WX013": {
