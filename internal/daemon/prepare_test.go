@@ -49,6 +49,35 @@ func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
 	}
 }
 
+func TestNewPreparerUsesConfiguredRootWhenSlotPathIsEmpty(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	root := filepath.Join(base, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	m := &Manager{cfg: cfg, roots: map[string]bool{root: true}}
+	t.Cleanup(m.Close)
+	if _, release, err := m.rootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Cleanup(release)
+	}
+
+	preparer := m.newPreparer(cfg, state.Slot{RootID: "root-1"})
+	if preparer.RootPath != root {
+		t.Fatalf("empty-path preparer root=%q want %q", preparer.RootPath, root)
+	}
+	if preparer.OwnedRoot == nil {
+		t.Fatal("empty-path preparer did not retain configured root descriptor")
+	}
+	if _, err := preparer.OwnedRoot.Lstat("."); err != nil {
+		t.Fatalf("empty-path preparer returned unusable root descriptor: %v", err)
+	}
+}
+
 func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")

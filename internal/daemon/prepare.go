@@ -29,7 +29,7 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 	if err == nil {
 		ownedRoot = m.rootHandleForPath(slotPath)
 		if ownedRoot == nil && slotPath == "" {
-			ownedRoot = m.rootHandleForPath(root)
+			ownedRoot = m.rootHandleForRoot(root)
 		}
 	}
 	return &workspace.Preparer{

@@ -1,16 +1,19 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -472,5 +475,203 @@ func TestCapacityCacheRecomputesSparseSelectionForNewSlots(t *testing.T) {
 	}
 	if len(second.Repositories) != 1 || len(second.Repositories[0].LFS) != 1 || second.Repositories[0].LFS[0].Paths[0] != "outside/added.bin" {
 		t.Fatalf("outside sparse report=%+v, want outside LFS path", second)
+	}
+}
+
+func TestCheckPrepareCapacityRejectsWorkspaceRootRuleErrors(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "multi_repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-root-rules", 1, "PREPARING")
+	root := string(workspaceRecord.Root)
+	if err := os.WriteFile(filepath.Join(root, ".worktreelink"), []byte("../outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(filepath.Join(root, ".worktreelink")) })
+	if _, err := manager.checkPrepareCapacity(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1); err == nil || !strings.Contains(err.Error(), "resolve workspace root copy rules") {
+		t.Fatalf("workspace root rule error=%v, want resolution failure", err)
+	}
+}
+
+func TestCheckPrepareCapacityRejectsWorkspaceRootCopyEstimateErrors(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "multi_repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-root-copy", 1, "PREPARING")
+	manager.cfg.Workspaces = map[string]config.Workspace{
+		string(workspaceRecord.Root): {Copy: []string{"required-copy-missing"}},
+	}
+	if _, err := manager.checkPrepareCapacity(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1); err == nil || !strings.Contains(err.Error(), "estimate workspace root copy bytes") {
+		t.Fatalf("workspace root copy error=%v, want estimate failure", err)
+	}
+}
+
+func TestCheckPrepareCapacityAggregatesCacheBoundaries(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-cache-boundaries", 1, "PREPARING")
+	rootVolume := "same-volume"
+	manager.freeSpace = func(*os.File) (string, int64, error) { return rootVolume, 100, nil }
+	legacy := func(_ context.Context, _ *workspace.Preparer, _ config.Config, _ discovery.Repository, _ string) (workspace.CapacityEstimate, error) {
+		return workspace.CapacityEstimate{WorktreeBytes: 12, LFSCacheBytes: 7}, nil
+	}
+	report, err := manager.checkPrepareCapacityWithEstimator(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].WorktreeRequired != 12 || report.Volumes[0].SharedRequired != 7 {
+		t.Fatalf("legacy cache report=%+v, want one volume with worktree/shared requirements", report)
+	}
+
+	withEmptyPath := func(_ context.Context, _ *workspace.Preparer, _ config.Config, _ discovery.Repository, _ string) (workspace.CapacityEstimate, error) {
+		return workspace.CapacityEstimate{
+			WorktreeBytes: 12,
+			LFSCacheBytes: 5,
+			LFS:           []workspace.LFSObjectInfo{{OID: "sha256:empty", Size: 5}},
+		}, nil
+	}
+	report, err = manager.checkPrepareCapacityWithEstimator(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1, withEmptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].SharedRequired != 0 {
+		t.Fatalf("empty cache path report=%+v, want shared bytes omitted", report)
+	}
+}
+
+func TestCheckPrepareCapacityKeepsSmallestFreeSpacePerVolume(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-free-space", 1, "PREPARING")
+	freeCalls := 0
+	manager.freeSpace = func(*os.File) (string, int64, error) {
+		freeCalls++
+		if freeCalls == 1 {
+			return "same-volume", 100, nil
+		}
+		return "same-volume", 50, nil
+	}
+	estimate := func(_ context.Context, _ *workspace.Preparer, _ config.Config, _ discovery.Repository, _ string) (workspace.CapacityEstimate, error) {
+		return workspace.CapacityEstimate{
+			WorktreeBytes: 12,
+			LFSCacheBytes: 5,
+			LFS:           []workspace.LFSObjectInfo{{OID: "sha256:object", Size: 5, CachePath: filepath.Join(string(resolved[0].Repository.CommonDir), "cache")}},
+		}, nil
+	}
+	report, err := manager.checkPrepareCapacityWithEstimator(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1, estimate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].Free != 50 || report.Volumes[0].WorktreeRequired != 12 || report.Volumes[0].SharedRequired != 5 {
+		t.Fatalf("same-volume report=%+v, want minimum free space and both requirements", report)
+	}
+}
+
+func TestCheckPrepareCapacityCreatesDistinctCacheVolume(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-distinct-volume", 1, "PREPARING")
+	manager.freeSpace = func(file *os.File) (string, int64, error) {
+		if filepath.Clean(file.Name()) == filepath.Clean(manager.Config().WorktreeRoot()) {
+			return "worktree-volume", 100, nil
+		}
+		return "cache-volume", 100, nil
+	}
+	estimate := func(_ context.Context, _ *workspace.Preparer, _ config.Config, _ discovery.Repository, _ string) (workspace.CapacityEstimate, error) {
+		return workspace.CapacityEstimate{WorktreeBytes: 12, LFSCacheBytes: 5, LFS: []workspace.LFSObjectInfo{{OID: "sha256:object", Size: 5, CachePath: filepath.Join(string(resolved[0].Repository.CommonDir), "cache")}}}, nil
+	}
+	report, err := manager.checkPrepareCapacityWithEstimator(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 1, estimate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Volumes) != 2 || report.Volumes[0].Volume != "cache-volume" || report.Volumes[1].Volume != "worktree-volume" {
+		t.Fatalf("distinct volume report=%+v, want cache and worktree volumes", report)
+	}
+}
+
+func TestEnforcePrepareCapacityLogsUnavailableEstimate(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	var logs strings.Builder
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+	resolved[0].OID = ""
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-estimate-warning", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, nil, manager.Config())
+	if err != nil || len(report.Volumes) != 0 {
+		t.Fatalf("unavailable estimate report=%+v err=%v, want non-blocking empty result", report, err)
+	}
+	if !strings.Contains(logs.String(), "prepare capacity estimate unavailable") {
+		t.Fatalf("warning log=%q, want unavailable estimate warning", logs.String())
+	}
+}
+
+func TestEnforcePrepareCapacityLogsSparseEstimateWarning(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	gitRun(t, repository, "config", "core.sparseCheckout", "true")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "sparse-volume", 1 << 40, nil }
+	var logs strings.Builder
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-sparse-warning", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, nil, manager.Config())
+	if err != nil || !report.Sparse {
+		t.Fatalf("sparse report=%+v err=%v, want non-blocking sparse estimate", report, err)
+	}
+	if !strings.Contains(logs.String(), "sparse checkout makes the capacity estimate non-blocking") {
+		t.Fatalf("warning log=%q, want sparse estimate warning", logs.String())
+	}
+}
+
+func TestEnforcePrepareCapacityQuarantinesLFSRepairErrors(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("asset.bin filter=lfs diff=lfs merge=lfs -text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("0", 64) + "\nsize 100\n"
+	if err := os.WriteFile(filepath.Join(repository, "asset.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".gitattributes", "asset.bin")
+	gitRun(t, repository, "commit", "-m", "add lfs object for repair failure")
+	resolved[0].OID = gitOutput(t, repository, "rev-parse", "HEAD")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-repair-error", 1, "PREPARING")
+	metadata := state.SlotRepository{
+		RepositoryID: string(resolved[0].Repository.ID),
+		DirName:      testDirName(resolved[0].Repository, manager.Config()),
+		State:        "PREPARING",
+		RequestedRef: resolved[0].RequestedRef,
+		BaseOID:      resolved[0].OID,
+	}
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
+		t.Fatal(err)
+	}
+	freeCalls := 0
+	manager.freeSpace = func(*os.File) (string, int64, error) {
+		freeCalls++
+		if freeCalls == 2 {
+			if err := os.RemoveAll(string(resolved[0].Repository.CommonDir)); err != nil {
+				t.Fatalf("remove common directory: %v", err)
+			}
+		}
+		return "repair-volume", 1 << 40, nil
+	}
+	_, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, []state.SlotRepository{metadata}, manager.Config())
+	var missing *MissingLFSObjectsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("repair error=%v, want missing LFS error", err)
+	}
+	got, err := store.Slot(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "FAILED" || got.FailureCode != "PREPARE_LFS_MISSING" {
+		t.Fatalf("slot after repair error=%+v, want FAILED with LFS code", got)
 	}
 }
