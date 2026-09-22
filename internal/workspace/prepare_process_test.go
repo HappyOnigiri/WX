@@ -85,6 +85,20 @@ func TestPrepareCommandCancelReturnsWhileDescendantHoldsOutputPipe(t *testing.T)
 	}
 }
 
+// 起動前に context が中断されていて process state が無い場合も、exit code は未知値として診断する。
+func TestPrepareCommandCanceledBeforeStartReportsUnknownExitCode(t *testing.T) {
+	t.Parallel()
+	preparer, repo, target := newDescendantPrepare(t, []string{"/usr/bin/true"}, time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := preparer.runPrepareWithIdentity(ctx, repo, target, "")
+	var failure *PrepareCommandError
+	if !errors.As(err, &failure) || !failure.Canceled || failure.TimedOut || failure.ExitCode != -1 {
+		t.Fatalf("pre-start cancellation error=%v typed=%+v", err, failure)
+	}
+	assertPrepareDetailExitCode(t, failure.DetailPath, -1)
+}
+
 // timeout では command process group ごと終了させ、descendant を worktree に残さない。
 func TestPrepareCommandTimeoutTerminatesDescendants(t *testing.T) {
 	t.Parallel()

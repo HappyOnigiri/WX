@@ -19,6 +19,17 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+func assertPrepareDetailExitCode(t *testing.T, path string, want int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read prepare detail %q: %v", path, err)
+	}
+	if got := fmt.Sprintf("exit_code: %d", want); !strings.Contains(string(data), got) {
+		t.Fatalf("prepare detail=%q, want %q", data, got)
+	}
+}
+
 func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -115,12 +126,14 @@ func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 	if detail, readErr := os.ReadFile(prepareFailure.DetailPath); readErr != nil || !strings.Contains(string(detail), "start_error:") {
 		t.Fatalf("missing executable detail=%q err=%v", detail, readErr)
 	}
+	assertPrepareDetailExitCode(t, prepareFailure.DetailPath, -1)
 	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: &config.Duration{Duration: -time.Second}}}
 	preparer.Config = cfg
 	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
-	if !errors.As(err, &prepareFailure) || !strings.Contains(err.Error(), "timeout must not be negative") {
+	if !errors.As(err, &prepareFailure) || prepareFailure.ExitCode != -1 || !strings.Contains(err.Error(), "timeout must not be negative") {
 		t.Fatalf("invalid timeout prepare error=%v typed=%+v", err, prepareFailure)
 	}
+	assertPrepareDetailExitCode(t, prepareFailure.DetailPath, -1)
 }
 
 func TestPrepareCommandErrorUnwrapAndNilReceiver(t *testing.T) {
@@ -202,12 +215,13 @@ func TestRunPrepareWithIdentityRejectsZeroReadinessTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, DetailDir: t.TempDir(), OwnedRoot: owner, RootPath: root}
 	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
 	var failure *PrepareCommandError
 	if !errors.As(err, &failure) || failure.TimedOut || failure.ExitCode != -1 || !strings.Contains(err.Error(), "timeout must be positive") {
 		t.Fatalf("zero readiness timeout error=%v typed=%+v", err, failure)
 	}
+	assertPrepareDetailExitCode(t, failure.DetailPath, -1)
 }
 
 // prepareDiagnosticWriter は出力上限の境界でも、prefix だけを空ファイルへ書き込まない。
@@ -336,12 +350,16 @@ func TestPrepareDiagnosticWriterDoesNotWriteAnEmptyPayload(t *testing.T) {
 func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testing.T) {
 	t.Parallel()
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.DetailDir = t.TempDir()
 	cfg := preparer.Config
 	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: &config.Duration{Duration: time.Second}}}}
 	preparer.Config = cfg
-	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, "some-identity"); err == nil {
+	err := preparer.runPrepareWithIdentity(context.Background(), repo, target, "some-identity")
+	var failure *PrepareCommandError
+	if !errors.As(err, &failure) {
 		t.Fatal("descriptor-bound prepare command with a missing configured root succeeded")
 	}
+	assertPrepareDetailExitCode(t, failure.DetailPath, -1)
 }
 
 // TestRunPrepareWithIdentityPropagatesTargetOpenFailureは、descriptor-bound経路でtarget openが失敗する分岐を確認する。
@@ -349,6 +367,7 @@ func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testi
 func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 	t.Parallel()
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.DetailDir = t.TempDir()
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -356,9 +375,12 @@ func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 	cfg := preparer.Config
 	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: &config.Duration{Duration: time.Second}}}}
 	preparer.Config = cfg
-	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, "some-identity"); err == nil {
+	err := preparer.runPrepareWithIdentity(context.Background(), repo, target, "some-identity")
+	var failure *PrepareCommandError
+	if !errors.As(err, &failure) {
 		t.Fatal("descriptor-bound prepare command opened a missing target")
 	}
+	assertPrepareDetailExitCode(t, failure.DetailPath, -1)
 }
 
 // TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommandは、command後のidentity検査を確認する。
@@ -385,6 +407,32 @@ func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.
 	preparer.Config = cfg
 	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, identity); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("target replacement during the prepare command was not detected: %v", err)
+	}
+}
+
+// command が失敗した場合も、expectedIdentity を指定した経路では失敗後の所有権検査を省略しない。
+func TestRunPrepareWithIdentityDetectsTargetReplacementAfterFailedCommand(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "parent=$(dirname \"$PWD\"); name=$(basename \"$PWD\"); cd \"$parent\" && rm -rf \"$name\" && mkdir \"$name\" && exit 17"
+	cfg := preparer.Config
+	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: &config.Duration{Duration: 5 * time.Second}}}}
+	preparer.Config = cfg
+	err = preparer.runPrepareWithIdentity(ctx, repo, target, identity)
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("target replacement after a failed prepare command was not detected: %v", err)
 	}
 }
 
