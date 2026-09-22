@@ -91,3 +91,44 @@ func TestOutcomeLessRejectsAnIdenticalOutcome(t *testing.T) {
 		t.Fatal("an outcome sorted before itself")
 	}
 }
+
+// 上位キーが等しいときは、下位キーの順序だけで結果を決める。
+func TestOutcomeLessKeepsStrictTieBreakers(t *testing.T) {
+	t.Parallel()
+	base := workspace.SubmoduleOutcome{Repository: "repo", Path: "path", Depth: 1, Action: "action", Reason: "reason"}
+	cases := []struct {
+		name string
+		a, b workspace.SubmoduleOutcome
+	}{
+		{
+			name: "repository equal delegates to depth",
+			a:    workspace.SubmoduleOutcome{Repository: "repo", Path: "path", Depth: 2, Action: "action", Reason: "reason"},
+			b:    base,
+		},
+		{
+			name: "depth equal delegates to path",
+			a:    workspace.SubmoduleOutcome{Repository: "repo", Path: "z", Depth: 1, Action: "action", Reason: "reason"},
+			b:    base,
+		},
+		{
+			name: "path equal delegates to action",
+			a:    workspace.SubmoduleOutcome{Repository: "repo", Path: "path", Depth: 1, Action: "z", Reason: "reason"},
+			b:    base,
+		},
+		{
+			name: "action equal delegates to reason",
+			a:    workspace.SubmoduleOutcome{Repository: "repo", Path: "path", Depth: 1, Action: "action", Reason: "z"},
+			b:    base,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if outcomeLess(test.a, test.b) {
+				t.Fatalf("outcomeLess(%+v,%+v)=true", test.a, test.b)
+			}
+			if !outcomeLess(test.b, test.a) {
+				t.Fatalf("outcomeLess(%+v,%+v)=false", test.b, test.a)
+			}
+		})
+	}
+}
