@@ -144,8 +144,6 @@ func parseCodexResumeTail(args []string) resumeIntent {
 	if sessionID != "" {
 		intent.Kind = resumeIntentLookup
 		intent.AgentSessionID = sessionID
-	} else if intent.Kind == resumeIntentContinueLatest {
-		intent.AgentSessionID = ""
 	}
 	return intent
 }

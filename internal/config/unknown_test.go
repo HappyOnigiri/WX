@@ -227,3 +227,11 @@ func TestSaveMaterializesUnknownAliasValues(t *testing.T) {
 		t.Fatalf("unknown keys after Save=%+v, want system.future_note and workspace_defaults.future_copy", got)
 	}
 }
+
+func TestResolveUnknownAliasesKeepsEmptyNodeContentNil(t *testing.T) {
+	node := &yaml.Node{Kind: yaml.ScalarNode, Value: "empty"}
+	got := resolveUnknownAliases(node, map[*yaml.Node]bool{})
+	if got.Content != nil {
+		t.Fatalf("empty node content=%#v, want nil", got.Content)
+	}
+}

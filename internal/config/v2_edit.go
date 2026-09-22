@@ -324,7 +324,9 @@ func v2ListSeed(c *Config, scope, root, rel, key string) ([]string, error) {
 	// 正規化できない設定は preview 側の検証が別に弾くため、ここでは元の値で続ける。
 	if normalized := effective; NormalizePaths(&normalized) == nil {
 		effective = normalized
-		if canonical, err := canonicalPath(root); err == nil {
+		canonical, err := canonicalPath(root)
+		switch err {
+		case nil:
 			root = canonical
 		}
 	}

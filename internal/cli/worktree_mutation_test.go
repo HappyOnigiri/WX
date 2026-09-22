@@ -53,7 +53,7 @@ func TestRunAgentWithPolicyFromMutationBoundariesRejectsFreshWithoutResume(t *te
 	client, handler, source := resumePolicyLaunchFixture(t)
 	var exit int
 	stderr := captureStderrForLease(t, func() {
-		exit = client.RunAgentWithPolicyFrom(context.Background(), source, "claude", nil, nil, true, WorktreeOptions{Disable: true})
+		exit = client.RunAgentWithPolicyFrom(context.Background(), source, "claude", nil, nil, true, WorktreeOptions{Force: true})
 	})
 	if exit != 2 || !strings.Contains(stderr, "fresh") {
 		t.Fatalf("exit=%d stderr=%q, want fresh argument error", exit, stderr)

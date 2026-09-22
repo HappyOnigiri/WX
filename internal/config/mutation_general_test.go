@@ -130,6 +130,11 @@ func TestMutationConfigGeneralRepositoryValidation(t *testing.T) {
 	if err := Validate(&cfg); err == nil {
 		t.Fatal("zero repository readiness timeout was accepted")
 	}
+	cfg = Defaults()
+	cfg.Repositories["/repository"] = Repository{Prepare: Prepare{Timeout: &zero}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("zero repository preparation timeout was rejected: %v", err)
+	}
 }
 
 // v2 の language 正本と旧 flatten view は、表示と RPC で同じ fallback を使う。
@@ -159,6 +164,8 @@ func TestMutationConfigGeneralLanguageAndCatalog(t *testing.T) {
 			t.Fatalf("Describe(%q, %q) unexpectedly succeeded", test.key, test.scope)
 		} else if !strings.Contains(err.Error(), test.wantError) {
 			t.Fatalf("Describe(%q, %q) error=%v, want %q", test.key, test.scope, err, test.wantError)
+		} else if test.scope == "repository" && strings.Contains(err.Error(), "language") {
+			t.Fatalf("Describe(%q, %q) listed a system-only key: %v", test.key, test.scope, err)
 		}
 	}
 }
@@ -229,6 +236,11 @@ func TestMutationConfigGeneralYAMLBoundaries(t *testing.T) {
 	preserveDynamicValues(scalarPresent, "demo", scalar, Workspace{}, []string{"worktree"})
 	if got := scalar["worktree"]; got != "from-file" {
 		t.Fatalf("existing scalar value=%#v, want it unchanged", got)
+	}
+	emptyScalar := map[string]any{}
+	preserveDynamicValues(scalarPresent, "demo", emptyScalar, Workspace{}, []string{"worktree"})
+	if got, ok := emptyScalar["worktree"]; !ok || got != "" {
+		t.Fatalf("preserved empty scalar=%#v (present=%t), want an empty string", got, ok)
 	}
 
 	for _, node := range []*yaml.Node{

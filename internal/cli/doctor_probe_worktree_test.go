@@ -87,6 +87,9 @@ func TestProbeSubmoduleFindingsIgnorePreparedOutOfScopePath(t *testing.T) {
 	if !strings.Contains(strings.Join(findings[0].Details, "\n"), "outside the preparation range") {
 		t.Fatalf("details = %+v", findings[0].Details)
 	}
+	if !strings.Contains(strings.Join(findings[0].Details, "\n"), "0 submodule(s) checked") {
+		t.Fatalf("details = %+v, want excluded submodule omitted from checked count", findings[0].Details)
+	}
 }
 
 // 準備は完了時に同じ検査を通しているため、ここでの差分は準備後に worktree が書き換わったことを意味する。

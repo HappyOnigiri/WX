@@ -162,17 +162,6 @@ func collectMappingKeys(node *yaml.Node, prefix string, out map[string]bool) {
 		if value.Kind != yaml.MappingNode {
 			continue
 		}
-		if key == "workspaces" || key == "repositories" {
-			// map 配下は利用者が選ぶ workspace root と repository membership path なので、
-			// 子孫も presence map へ記録し、明示した空 list を往復で保つ。
-			for j := 0; j+1 < len(value.Content); j += 2 {
-				dynamicKey, dynamicValue := value.Content[j], value.Content[j+1]
-				dynamicPath := key + "." + dynamicKey.Value
-				out[dynamicPath] = true
-				collectMappingKeys(dynamicValue, dynamicPath, out)
-			}
-			continue
-		}
 		collectMappingKeys(value, key, out)
 	}
 }

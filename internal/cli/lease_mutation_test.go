@@ -112,6 +112,19 @@ func TestRunLeaseReleaseMutationBoundariesFillsMissingSessionID(t *testing.T) {
 	}
 }
 
+func TestRunLeaseReleaseMutationBoundariesPrintsCompletionAfterWaiting(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false, "job_id": "job-1", "job_kind": "SNAPSHOT"}
+	stdout := captureLeaseStdout(t, func() {
+		if got := client.RunLeaseRelease(ctx, "session", false, true, false); got != 0 {
+			t.Fatalf("release --wait exit=%d", got)
+		}
+	})
+	if !strings.Contains(stdout, "completed") {
+		t.Fatalf("stdout=%q, want completed release report", stdout)
+	}
+}
+
 func TestMergeReleaseStatusMutationBoundariesKeepNonEmptyFields(t *testing.T) {
 	base := releaseReply{SessionID: "old-session", JobID: "old-job", JobKind: "OLD", State: "PENDING", SlotState: "DRAINING", SessionState: "RELEASING", FailureCode: "old-code", FailureMessage: "old-message", DetailPath: "/old"}
 	status := releaseReply{SessionID: "new-session", JobID: "new-job", JobKind: "SNAPSHOT", State: "SUCCEEDED", SlotState: "SNAPSHOTTED", SessionState: "ARCHIVED", FailureCode: "new-code", FailureMessage: "new-message", DetailPath: "/new"}

@@ -71,6 +71,22 @@ func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 	}
 }
 
+func TestSetFieldMutationBoundariesParseBeforeRecordingPresence(t *testing.T) {
+	var raw Config
+	if err := SetField(&raw, "pool.preparation_concurrency", "not-an-integer"); err == nil {
+		t.Fatal("invalid scalar value was accepted")
+	}
+	if raw.present != nil {
+		t.Fatalf("invalid SetField populated presence map: %v", raw.present)
+	}
+	if err := SetField(&raw, "worktree.undefined", "cold"); err != nil {
+		t.Fatal(err)
+	}
+	if !raw.present["workspace_defaults.worktree"] || raw.Worktree.Undefined != "cold" {
+		t.Fatalf("valid SetField did not record value and presence: raw=%+v present=%v", raw.Worktree, raw.present)
+	}
+}
+
 // TestResetFieldRestoresScalarDefault は scalar key の --reset が present を落とし、
 // 設定ファイルからキーを消して既定値へ戻すことを確かめる。
 func TestResetFieldRestoresScalarDefault(t *testing.T) {

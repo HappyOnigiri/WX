@@ -265,12 +265,13 @@ func TestRunAgentUnknownResumeIDPassesOriginalArgumentsThrough(t *testing.T) {
 }
 
 type resumeLaunchHandler struct {
-	mu      sync.Mutex
-	events  []string
-	params  map[string]json.RawMessage
-	history map[string][]json.RawMessage
-	lease   daemon.Lease
-	status  resumeStatus
+	mu        sync.Mutex
+	events    []string
+	params    map[string]json.RawMessage
+	history   map[string][]json.RawMessage
+	deadlines map[string][]time.Time
+	lease     daemon.Lease
+	status    resumeStatus
 	// policy は WorktreePolicy の応答である。零値は workspace を解決できなかったことを表す。
 	policy daemon.WorktreePolicyReply
 	// waitReadyErrors と leaseErrors は該当 method の応答を呼び出し順に決める。使い切った後は成功に戻る。
@@ -280,7 +281,7 @@ type resumeLaunchHandler struct {
 	eventLog        string
 }
 
-func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
+func (h *resumeLaunchHandler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.events = append(h.events, method)
 	if h.params == nil {
@@ -288,6 +289,12 @@ func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.
 	}
 	if h.history == nil {
 		h.history = map[string][]json.RawMessage{}
+	}
+	if h.deadlines == nil {
+		h.deadlines = map[string][]time.Time{}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		h.deadlines[method] = append(h.deadlines[method], deadline)
 	}
 	h.params[method] = append(json.RawMessage(nil), raw...)
 	h.history[method] = append(h.history[method], append(json.RawMessage(nil), raw...))
@@ -350,6 +357,12 @@ func (h *resumeLaunchHandler) historyFor(method string) []json.RawMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]json.RawMessage(nil), h.history[method]...)
+}
+
+func (h *resumeLaunchHandler) deadlinesFor(method string) []time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]time.Time(nil), h.deadlines[method]...)
 }
 
 func serveResumeLaunchRPC(t *testing.T, handler *resumeLaunchHandler) (Client, func()) {
