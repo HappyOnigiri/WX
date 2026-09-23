@@ -118,3 +118,5 @@ internal/setup/message.go	ast-v1:a92297fd49cfed9993f1883a6e9997c4fdc97d46642859a
 internal/sessions/scanner/parse.go	ast-v1:fce68a45baeb42b6d093187f4b2e30caabb0b38845706e17db43fdbc282efbe2	JSONL reader の初期 buffer サイズだけが変わり、ReadBytes の内容・解析結果・エラー契約は変わらないため等価変異
 internal/pool/branch.go	ast-v1:8ab1ec6b7e5034a2ac9fb726e1c1fdd8e228e333308e5ef0f51e5c66914c6b5c	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異
 internal/pool/branch.go	ast-v1:6b1342fc7dcf20dd150c56e9f51b466de29524dd7d1afc2e57c5a39ced3ded77	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異
+internal/archive/conflict.go	ast-v1:58c5b3b9fbd408d44c3af82626c3991c8626c5cc3a2e129666f61a0526681dc2	path が異なる場合だけ比較する分岐の内側なので、< と <= は同じ順序になる等価変異
+internal/archive/force_added.go	ast-v1:1114ad3a843732d34cf4b59029f0129fe4b8318c391fbeee07cbd79383f53d4e	tab が 0 の場合は変異前後どちらも空 metadata を field 数検査で拒否するため、< 0 と <= 0 は同じ動作になる等価変異
