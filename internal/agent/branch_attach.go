@@ -198,7 +198,7 @@ func checkoutAttaches(ctx context.Context, runner *gitx.Runner, target string, a
 			return true, true
 		}
 	}
-	if hasWord(args, "--detach") {
+	if hasWord(args, "--detach", "-d") {
 		return false, true
 	}
 	// パスの操作は HEAD を動かさない。

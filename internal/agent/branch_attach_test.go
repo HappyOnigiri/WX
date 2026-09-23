@@ -197,6 +197,7 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 	for _, command := range []string{
 		"git checkout --detach HEAD",
 		"git checkout --detach other",
+		"git checkout -d other",
 		"git switch --detach HEAD",
 		"git switch -d other",
 		"git checkout -- tracked.txt",
