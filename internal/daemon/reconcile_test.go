@@ -33,6 +33,41 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 	}
 }
 
+func TestReconcileArtifactsSchedulesRecoveredJobs(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	sessionID := "recover-preparing-slot"
+	session := state.Session{
+		ID: sessionID, WorkspaceID: string(workspaceRecord.ID), SlotID: sessionID,
+		State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken(sessionID),
+	}
+	if _, err := store.CreateSlotSession(ctx, testSlotRow(t, manager, string(workspaceRecord.ID), sessionID, 1, "PREPARING"), nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.reconcileArtifacts(ctx)
+
+	var queued *queuedJob
+	manager.jobQueue.mu.Lock()
+	for class := jobClassInteractive; class < jobClassCount && queued == nil; class++ {
+		for _, candidate := range manager.jobQueue.pending[class] {
+			if candidate.slotID == sessionID {
+				copy := candidate
+				queued = &copy
+				break
+			}
+		}
+	}
+	manager.jobQueue.mu.Unlock()
+	if queued == nil {
+		t.Fatal("reconcile did not queue the recovered prepare job")
+	}
+	job, err := store.JobByID(ctx, queued.id)
+	if err != nil || job.Kind != "PREPARE" || job.State != "PENDING" || job.SlotID != sessionID {
+		t.Fatalf("recovered job=%+v err=%v, want pending PREPARE for slot %s", job, err, sessionID)
+	}
+}
+
 func TestReconcileArtifactsSkipsUnverifiableAndArchivedPaths(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, _, _, _ := managerCoverageFixture(t)

@@ -230,3 +230,14 @@ func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 		t.Fatal("outside-root path was recorded as a lease")
 	}
 }
+
+func TestHoldRootForPathSkipsPathOutsideConfiguredRoot(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+
+	release, err := f.Manager.holdRootForPath(filepath.Join(t.TempDir(), "outside"))
+	if err != nil {
+		t.Fatalf("outside-root path hold error=%v, want no-op success", err)
+	}
+	release()
+}

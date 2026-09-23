@@ -176,3 +176,15 @@ func TestRootForPathKeepsEqualRegisteredRoot(t *testing.T) {
 		t.Fatalf("rootForPath(%q)=%q,%v want %q", path, got, ok, root)
 	}
 }
+
+func TestRootForPathFindsRetiredRootIdentityWithoutActiveRoot(t *testing.T) {
+	t.Parallel()
+	retiredRoot := t.TempDir()
+	path := filepath.Join(retiredRoot, "workspace", "slot")
+	m := &Manager{rootIdentities: map[string]string{retiredRoot: "generation"}}
+
+	got, ok := m.rootForPath(path)
+	if !ok || got != retiredRoot {
+		t.Fatalf("rootForPath(%q)=%q,%v want retired root %q", path, got, ok, retiredRoot)
+	}
+}
