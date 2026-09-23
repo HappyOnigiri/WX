@@ -487,6 +487,9 @@ func policySegment(parts []commandWord, base *string) (invocation policyGitInvoc
 	if commandIndex < len(parts) {
 		command := parts[commandIndex]
 		switch name := filepath.Base(command.value); {
+		case name == "echo" || name == "printf":
+			// 引数を表示するだけで、引数に git の語があっても実行しない。
+			return policyGitInvocation{}, false, true
 		case !command.quoted && command.value == "eval":
 			// eval は引数を連結して実行時にコマンドとして読むので、静的には追えない。
 			return policyGitInvocation{}, false, false
