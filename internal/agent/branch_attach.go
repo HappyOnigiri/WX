@@ -164,7 +164,9 @@ func checkoutAttaches(ctx context.Context, runner *gitx.Runner, target string, a
 	for _, arg := range args {
 		switch value := arg.value; {
 		case value == "-b" || value == "-B" || value == "--orphan" || value == "--track" || value == "-t",
-			strings.HasPrefix(value, "--orphan=") || strings.HasPrefix(value, "--track="):
+			strings.HasPrefix(value, "--orphan=") || strings.HasPrefix(value, "--track="),
+			// `-b<name>` のように値を連結した短縮オプションも同じ意味である。
+			strings.HasPrefix(value, "-b") || strings.HasPrefix(value, "-B"):
 			return true, true
 		}
 	}
@@ -216,7 +218,9 @@ func switchAttaches(args []commandWord) bool {
 	for _, arg := range args {
 		switch value := arg.value; {
 		case value == "-c" || value == "-C" || value == "--create" || value == "--force-create",
-			strings.HasPrefix(value, "--create=") || strings.HasPrefix(value, "--force-create="):
+			strings.HasPrefix(value, "--create=") || strings.HasPrefix(value, "--force-create="),
+			// `-c<name>` のように値を連結した短縮オプションも同じ意味である。
+			strings.HasPrefix(value, "-c") || strings.HasPrefix(value, "-C"):
 			return true
 		}
 	}
