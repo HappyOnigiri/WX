@@ -152,6 +152,20 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 	runBranchPolicyCases(t, cases)
 }
 
+// 引用された ~ はホームではなく、cwd にある `~` という名前のディレクトリを指す。
+func TestClassifyBranchAttachKeepsQuotedTildeLiteral(t *testing.T) {
+	fixture := newBranchPolicyFixture(t)
+	t.Setenv("HOME", fixture.main)
+	if err := os.Mkdir(filepath.Join(fixture.detached, "~"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runBranchPolicyCases(t, []branchPolicyCase{
+		{command: `cd "~" && git switch other`, cwd: fixture.detached, want: branchPolicyAttach},
+		{command: `git -C '~' switch other`, cwd: fixture.detached, want: branchPolicyAttach},
+		{command: `cd ~ && git switch other`, cwd: fixture.detached, want: branchPolicyAllow},
+	})
+}
+
 // 誤爆がこの判定の実害なので、通す操作を厚く保つ。
 func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 	fixture := newBranchPolicyFixture(t)

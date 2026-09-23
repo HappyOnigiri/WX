@@ -12,6 +12,8 @@ type commandWord struct {
 	quoted   bool
 	expanded bool
 	globbed  bool
+	// tilde は語が引用されていない ~ で始まり、shell がホームへ展開し得ることを表す。
+	tilde bool
 	// substitutions は語の中の二重引用符内の `$(...)` とバッククオートの本文で、語とは別のサブシェルとして判定する。
 	// commentlint:allow-long -- 本文を語に残したまま別に判定する理由を残す
 	substitutions [][]policyToken
@@ -278,6 +280,9 @@ func (l *policyLexer) unquoted(char byte) {
 	case char == '*' || char == '?' || char == '[':
 		l.write(char)
 		l.current.globbed = true
+	case char == '~' && !l.started:
+		l.write(char)
+		l.current.tilde = true
 	default:
 		l.write(char)
 	}
@@ -523,20 +528,22 @@ func parsePolicyGitInvocation(args []commandWord, base string) (policyGitInvocat
 }
 
 // resolvePolicyDirectory は path を base から解決した実在ディレクトリの実パスを返し、解決できなければ空を返す。
-// 先頭の ~ と ~/ だけを展開する。まだ作られていないパスは、実行時に cd が失敗した後の相対パスを取り違えないよう解決できないものとする。
+// 引用されていない先頭の ~ と ~/ だけを展開し、引用された ~ は文字どおりのパスとして扱う。
+// まだ作られていないパスは、実行時に cd が失敗した後の相対パスを取り違えないよう解決できないものとする。
 // commentlint:allow-long -- 未作成のパスを解決不能とする理由を残す
 func resolvePolicyDirectory(path commandWord, base string) string {
 	value := path.value
 	if !path.static() || value == "" {
 		return ""
 	}
-	if value == "~" || strings.HasPrefix(value, "~/") {
+	switch {
+	case path.tilde && (value == "~" || strings.HasPrefix(value, "~/")):
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return ""
 		}
 		value = home + value[1:]
-	} else if strings.Contains(value, "~") {
+	case path.tilde || (!path.quoted && strings.Contains(value, "~")):
 		return ""
 	}
 	if !filepath.IsAbs(value) {

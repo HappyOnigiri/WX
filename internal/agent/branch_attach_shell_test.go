@@ -75,7 +75,7 @@ func TestLexPolicyCommandStructure(t *testing.T) {
 }
 
 func TestLexPolicyCommandMarksDynamicWords(t *testing.T) {
-	tokens, ok := lexPolicyCommand(`git checkout $A "$B" 'lit$C' * {} {`)
+	tokens, ok := lexPolicyCommand(`git checkout $A "$B" 'lit$C' * {} { ~/x "~" a~`)
 	if !ok {
 		t.Fatal("command was not well formed")
 	}
@@ -92,6 +92,9 @@ func TestLexPolicyCommandMarksDynamicWords(t *testing.T) {
 		{value: "*", globbed: true},
 		{value: "{}"},
 		{value: "{"},
+		{value: "~/x", tilde: true},
+		{value: "~", quoted: true},
+		{value: "a~"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("words=%+v, want %+v", got, want)
@@ -169,14 +172,20 @@ func TestResolvePolicyDirectoryExpandsOnlyLeadingTilde(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "file"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(home, "~"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		path commandWord
 		want string
 	}{
-		{path: commandWord{value: "~"}, want: home},
-		{path: commandWord{value: "~/repo"}, want: filepath.Join(home, "repo")},
+		{path: commandWord{value: "~", tilde: true}, want: home},
+		{path: commandWord{value: "~/repo", tilde: true}, want: filepath.Join(home, "repo")},
 		{path: commandWord{value: "repo"}, want: filepath.Join(home, "repo")},
-		{path: commandWord{value: "~other/repo"}, want: ""},
+		{path: commandWord{value: "~other/repo", tilde: true}, want: ""},
+		// 引用された ~ は展開されず、base からの相対パスになる。
+		{path: commandWord{value: "~", quoted: true}, want: filepath.Join(home, "~")},
+		{path: commandWord{value: "~/repo", quoted: true}, want: ""},
 		{path: commandWord{value: "repo~"}, want: ""},
 		{path: commandWord{value: "file"}, want: ""},
 		{path: commandWord{value: ""}, want: ""},
