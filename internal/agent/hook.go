@@ -35,7 +35,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		// wx -n の直接起動には session が無く、daemon へ接続する相手もいない。
 		// 書き換えの判定だけをその場で出し、判定できない入力は素通しさせる。
 		if root := os.Getenv("WX_DIRECT_ROOT"); root != "" && event == "pre-tool-use" {
-			writePreToolUseDecision(readHookPayload(input), root)
+			writePreToolUseDecision(ctx, readHookPayload(input), root, false)
 		}
 		return nil
 	}
@@ -48,6 +48,8 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	}
 	var payload HookInput
 	var toolPayload []byte
+	var toolDecision preToolUseHookOutput
+	var toolDecided bool
 	switch event {
 	case "session-start", "session-end":
 		payload, err = decodeHookPayload(input)
@@ -58,6 +60,13 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		// stdin は WaitReady より先に読み切る。読まずに待つと、command が大きいときに
 		// agent 側の write が pipe buffer で止まり、双方が待ち合って deadlock する。
 		toolPayload = readHookPayload(input)
+		// deny は daemon を必要としないので readiness を待たずに出す。
+		// daemon に届かず hook が失敗で終わると agent は操作を通すため、その場合にも deny を失わないようにする。
+		toolDecision, toolDecided = preToolUseDecision(ctx, toolPayload, os.Getenv("WX_WORKSPACE_ROOT"), true)
+		if toolDecided && toolDecision.HookSpecificOutput.PermissionDecision == "deny" {
+			writePreToolUseOutput(toolDecision)
+			return nil
+		}
 	}
 	// hook の失敗は agent 操作を止めるため、binary 置換後の再起動中も接続を再試行する。
 	// 空の DB では最短 22ms だが、launchd の遅延、migration、復旧 job、root descriptor を考慮して予算は 2 秒とする。
@@ -123,8 +132,10 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		if response.Notice != "" {
 			_, _ = fmt.Fprintln(os.Stdout, response.Notice)
 		}
-		// 判定は readiness の後に出す。書き換え先の wx new は準備の終わった workspace からしか貸し出せない。
-		writePreToolUseDecision(toolPayload, os.Getenv("WX_WORKSPACE_ROOT"))
+		// 書き換えは readiness の後に出す。書き換え先の wx new は準備の終わった workspace からしか貸し出せない。
+		if toolDecided {
+			writePreToolUseOutput(toolDecision)
+		}
 		return nil
 	case "session-end":
 		if payload.SessionID == "" {
