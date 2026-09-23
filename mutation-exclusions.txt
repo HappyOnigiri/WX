@@ -115,6 +115,9 @@ internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3
 internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
 internal/daemon/usage.go	ast-v1:16c8791c91bfe238d55a24852342e93ddf39d8bb3d24a9ed843c08e5fd5cf083	map の初期容量は内容・len・戻り値を変えないため、previous と measured の長さの加算を減算へ変えても観測可能な差がない
 internal/daemon/roots.go	ast-v1:2b05f22a8dab05697358faab37361fa1a9a10dca98559598dbf18f4a5ff59411	rootForPath は roots と rootIdentities の全要素を後続ループで map へ挿入し、容量hintは上限でなく不足時にgrowするため、加算を減算へ変えても集合と選択結果は変わらない。負hintもGo runtimeで0として扱われる
+internal/daemon/roots.go	ast-v1:e6f58585331b3cbbf135845ee9a407adecbddd4181138a9e45cff5f168f5c6e6	rootForPath は全候補を並べ替えた後に path を含む root を選ぶ。別々の root が同じ path を含むなら一方は他方の子で path 長が異なり、同じ長さの候補は同時に一致しない。同一 path の active/retired 候補は known map で統合されるため、active 比較を反転しても選択結果は変わらない
+internal/daemon/roots.go	ast-v1:877ebe59c367d2a810f1e0c5af35b3e40fbd9c8ef7d81addaefd5764f784276e	この符号は rootForPath の同じ長さの候補順だけを変える。path を含む root は同じ長さの別 root と両立せず、返す root を変えない
+internal/daemon/roots.go	ast-v1:97b0a350b832cc99d3eb75b2bf348d32acd6b48544792218d36ba027a64cb3a4	この符号は rootForPath の同じ長さの候補順だけを変える。path を含む root は同じ長さの別 root と両立せず、返す root を変えない
 internal/setup/message.go	ast-v1:a92297fd49cfed9993f1883a6e9997c4fdc97d46642859a7fdadd55e195e07f7	pairs の map 初期容量だけを決める除算で、乗算へ変えても収集する key/value と戻り値は変わらないため等価変異
 internal/sessions/scanner/parse.go	ast-v1:fce68a45baeb42b6d093187f4b2e30caabb0b38845706e17db43fdbc282efbe2	JSONL reader の初期 buffer サイズだけが変わり、ReadBytes の内容・解析結果・エラー契約は変わらないため等価変異
 internal/pool/branch.go	ast-v1:8ab1ec6b7e5034a2ac9fb726e1c1fdd8e228e333308e5ef0f51e5c66914c6b5c	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異

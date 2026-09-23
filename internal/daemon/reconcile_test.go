@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,8 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 		state.Session{ID: missingID, SlotID: missingID, State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken(missingID)}, ""); err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
 
 	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_quarantine_update BEFORE UPDATE ON slots WHEN NEW.state='QUARANTINED' BEGIN SELECT RAISE(ABORT,'injected quarantine failure'); END`); err != nil {
@@ -30,6 +34,32 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 	manager.reconcileArtifacts(ctx)
 	if slot, err := store.Slot(ctx, missingID); err != nil || slot.State != "LEASED" {
 		t.Fatalf("slot state changed despite injected quarantine failure: slot=%+v err=%v", slot, err)
+	}
+	if !strings.Contains(logs.String(), "quarantine missing owned path failed") {
+		t.Fatalf("missing-path quarantine failure was not logged: %s", logs.String())
+	}
+}
+
+func TestReconcileArtifactsDoesNotLogSuccessfulDiagnosticWritesAsFailures(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	orphanPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "wsp999", "orphan")
+	if err := os.MkdirAll(orphanPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := manager.artifactDiagnostics(ctx)
+	if !containsString(before["unknown_paths"].([]string), orphanPath) {
+		t.Fatalf("orphan path was not discovered before reconciliation: %v", before)
+	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	manager.reconcileArtifacts(ctx)
+
+	for _, message := range []string{"record quarantined artifact failed", "prune resolved quarantine records failed"} {
+		if strings.Contains(logs.String(), message) {
+			t.Fatalf("successful diagnostic persistence logged %q: %s", message, logs.String())
+		}
 	}
 }
 

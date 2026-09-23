@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -11,6 +14,8 @@ import (
 func TestReconcileArtifactsKeepsInFlightReservationAndReclaimsAbandonedOne(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, _, _, _ := managerCoverageFixture(t)
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
 	inFlight := testSlotRow(t, manager, "", "in-flight", 1, "ALLOCATING")
 	if err := store.ReserveSlot(ctx, state.Slot{ID: inFlight.ID, Generation: inFlight.Generation, RootID: inFlight.RootID, RelPath: inFlight.RelPath, OwnerSessionID: inFlight.ID}); err != nil {
 		t.Fatal(err)
@@ -40,5 +45,8 @@ func TestReconcileArtifactsKeepsInFlightReservationAndReclaimsAbandonedOne(t *te
 	}
 	if slot.FailureCode != "ALLOCATION_INTERRUPTED" {
 		t.Fatalf("unexpected failure code: %s", slot.FailureCode)
+	}
+	if strings.Contains(logs.String(), "slot reservation changed before reconciliation") {
+		t.Fatalf("successful reservation quarantine was logged as a failure: %s", logs.String())
 	}
 }
