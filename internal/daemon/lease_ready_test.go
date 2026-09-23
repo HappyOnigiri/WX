@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -139,5 +140,36 @@ func TestLeaseReadyMatchesAcceptsEveryMatchingRepository(t *testing.T) {
 	matched, err := manager.readyMatches(ctx, slot, resolved)
 	if err != nil || !matched {
 		t.Fatalf("readyMatches matched=%v err=%v, want every repository to match", matched, err)
+	}
+}
+
+func TestLeaseReadyMatchesRejectsSlotWhenConfiguredRootCannotExpand(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	manager.mu.Lock()
+	manager.cfg.Storage.WorktreeRoot = "$WX_TEST_ROOT/worktrees"
+	manager.cfg.System.Storage.WorktreeRoot = "$WX_TEST_ROOT/worktrees"
+	manager.mu.Unlock()
+
+	slot := state.Slot{Path: filepath.Join(t.TempDir(), "unregistered-slot")}
+	matched, err := manager.readyMatches(ctx, slot, nil)
+	if err != nil || matched {
+		t.Fatalf("readyMatches matched=%v err=%v, want an unregistered slot rejected without error", matched, err)
+	}
+}
+
+func TestLeaseReadyMatchesRequiresRegisteredRootForConfiguredPath(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	configuredRoot := filepath.Join(t.TempDir(), "worktrees")
+	manager.mu.Lock()
+	manager.cfg.Storage.WorktreeRoot = configuredRoot
+	manager.cfg.System.Storage.WorktreeRoot = configuredRoot
+	manager.mu.Unlock()
+
+	slot := state.Slot{Path: filepath.Join(configuredRoot, "unregistered-slot")}
+	matched, err := manager.readyMatches(ctx, slot, nil)
+	if matched || !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("readyMatches matched=%v err=%v, want unregistered configured path rejected as an ownership error", matched, err)
 	}
 }

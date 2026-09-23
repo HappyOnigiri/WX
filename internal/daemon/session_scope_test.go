@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,15 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+func TestRegisteredSlotScopePropagatesMembershipLookupError(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("membership lookup failed")
+	scope, found, err := registeredSlotScope(state.ScopeWorkspace{ID: "registered"}, true, false, wantErr)
+	if !errors.Is(err, wantErr) || found || scope != (state.ScopeWorkspace{}) {
+		t.Fatalf("registered slot scope=%+v found=%v err=%v, want lookup failure propagated", scope, found, err)
+	}
+}
 
 // 未登録のworkspaceでもcwdの解決結果は返し、登録後はslot pathとsessionが同じIDの下に並ぶことを検査する。
 func TestWorkspaceScopeReportsRegistrationSlotPathsAndSessions(t *testing.T) {
