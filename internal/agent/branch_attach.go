@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,8 +114,12 @@ func classifyBranchAttach(ctx context.Context, runner *gitx.Runner, command, cwd
 		if invocation.target == "" {
 			return branchPolicyUnresolved
 		}
-		if !isLinkedWorktree(ctx, runner, invocation.target) {
+		switch linkedWorktreeState(ctx, runner, invocation.target) {
+		case worktreeNotLinked:
 			continue
+		case worktreeLinkUnknown:
+			return branchPolicyUnresolved
+		case worktreeLinked:
 		}
 		if invocation.dynamic {
 			return branchPolicyUnresolved
@@ -139,24 +144,47 @@ func classifyBranchAttach(ctx context.Context, runner *gitx.Runner, command, cwd
 	return branchPolicyAllow
 }
 
-// isLinkedWorktree は target が linked worktree の中かを git dir と共通 git dir の比較で判定する。
-// rev-parse が失敗する場所（Git の管理下にないディレクトリなど）では対象の git 自身も失敗するので、linked ではないとして Git に任せる。
-// commentlint:allow-long -- 失敗を linked でないとみなす根拠を残す
-func isLinkedWorktree(ctx context.Context, runner *gitx.Runner, target string) bool {
-	result, err := runner.Run(ctx, target, "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir")
+type worktreeLinkState int
+
+const (
+	worktreeNotLinked worktreeLinkState = iota
+	worktreeLinked
+	worktreeLinkUnknown
+)
+
+// linkedWorktreeState は target が linked worktree の中かを git dir と共通 git dir の比較で判定する。
+// Git の管理下にないディレクトリでは対象の git 自身も失敗するので、linked ではないとして Git に任せる。
+// タイムアウトなど、それ以外の理由で判定できない場合は unknown を返し、attach を確かめずに通さない。
+// commentlint:allow-long -- 管理外だけを linked でないとみなす根拠を残す
+func linkedWorktreeState(ctx context.Context, runner *gitx.Runner, target string) worktreeLinkState {
+	// 管理外の判定は Git の英語のメッセージで行うので、表示言語を固定する。
+	result, err := runner.RunEnv(ctx, target, []string{"LC_ALL=C"}, "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir")
 	if err != nil {
-		return false
+		if gitx.IsNotRepository(err) && ctx.Err() == nil {
+			return worktreeNotLinked
+		}
+		return worktreeLinkUnknown
 	}
 	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
 	if len(lines) != 2 {
-		return false
+		return worktreeLinkUnknown
 	}
 	gitDir, gitDirErr := filepath.EvalSymlinks(lines[0])
 	commonDir, commonDirErr := filepath.EvalSymlinks(lines[1])
 	if gitDirErr != nil || commonDirErr != nil {
-		return false
+		return worktreeLinkUnknown
 	}
-	return gitDir != commonDir
+	if gitDir == commonDir {
+		return worktreeNotLinked
+	}
+	return worktreeLinked
+}
+
+// refMissing は --verify --quiet の照会が「ref が無い」で終わったかを返す。
+// この形は exit 1 で stderr が空になるので、Git の実行障害やタイムアウトと区別できる。
+func refMissing(ctx context.Context, err error) bool {
+	var gitErr *gitx.Error
+	return ctx.Err() == nil && errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 && gitErr.Result.Stderr == ""
 }
 
 // checkoutAttaches は git checkout の引数がブランチを attach するかを返す。第 2 戻り値が false なら判定できない。
@@ -200,11 +228,15 @@ func checkoutAttaches(ctx context.Context, runner *gitx.Runner, target string, a
 	branch := strings.TrimPrefix(candidate.value, "refs/heads/")
 	if _, err := runner.Run(ctx, target, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		return true, true
+	} else if !refMissing(ctx, err) {
+		return false, false
 	}
 	// ローカルブランチ以外で commit に解決できる引数は detach になる。remote の推測はこの解決に失敗したときだけ働く。
 	// commentlint:allow-long -- remote の推測より先に rev として解決する理由を残す
 	if _, err := runner.Run(ctx, target, "rev-parse", "--verify", "--quiet", candidate.value+"^{commit}"); err == nil {
 		return false, true
+	} else if !refMissing(ctx, err) {
+		return false, false
 	}
 	// `checkout foo` は origin/foo だけがある場合にも foo を作って attach する。
 	remotes, err := runner.Run(ctx, target, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes")

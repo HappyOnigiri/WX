@@ -154,6 +154,24 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 	runBranchPolicyCases(t, cases)
 }
 
+// git の照会が管理外以外の理由で失敗した場合は、attach を確かめずに通さない。
+func TestClassifyBranchAttachFailsClosedWhenGitFails(t *testing.T) {
+	fixture := newBranchPolicyFixture(t)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := &gitx.Runner{Timeout: branchPolicyGitTimeout}
+	for _, command := range []string{"git switch other", "git checkout other"} {
+		if got := classifyBranchAttach(canceled, runner, command, fixture.detached); got != branchPolicyUnresolved {
+			t.Fatalf("classify(%q) with a canceled context=%d, want unresolved", command, got)
+		}
+	}
+	// 表示言語が英語以外でも、管理外のディレクトリは Git に任せて通す。
+	t.Setenv("LC_ALL", "ja_JP.UTF-8")
+	if got := classifyInFixture("git checkout main", fixture.tmp); got != branchPolicyAllow {
+		t.Fatalf("classify in a directory outside Git=%d, want allow", got)
+	}
+}
+
 // 引用された ~ はホームではなく、cwd にある `~` という名前のディレクトリを指す。
 func TestClassifyBranchAttachKeepsQuotedTildeLiteral(t *testing.T) {
 	fixture := newBranchPolicyFixture(t)
