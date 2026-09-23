@@ -271,6 +271,9 @@ func TestClassifyBranchAttachFailsClosedWhenUnresolved(t *testing.T) {
 		"git checkout `cat ref.txt`",
 		"git checkout $(cat ref.txt)",
 		"git checkout feature-*",
+		// ブレース展開は shell が別の語に変える。
+		"git checkout {other,}",
+		"git -C {detached,} switch other",
 		// 書き込む形の symbolic-ref も、対象が静的でなければ決められない。
 		`REF=HEAD; git symbolic-ref "$REF" refs/heads/other`,
 		// 実行時に引数が足される。

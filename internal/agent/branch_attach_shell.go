@@ -283,9 +283,24 @@ func (l *policyLexer) unquoted(char byte) {
 	case char == '~' && !l.started:
 		l.write(char)
 		l.current.tilde = true
+	case char == '{' && isBraceExpansion(l.command[l.index+1:]):
+		// `{a,b}` と `{1..3}` は shell が別の語に展開するので、静的な文字列として扱わない。
+		l.write(char)
+		l.current.globbed = true
 	default:
 		l.write(char)
 	}
+}
+
+// isBraceExpansion は `{` の直後から、語が終わる前に `}` で閉じ、その間に `,` か `..` があるかを返す。
+// find -exec の `{}` のように区切りのない括弧は展開されないので false を返す。
+func isBraceExpansion(rest string) bool {
+	end := strings.IndexAny(rest, "} \t\r\n;&|()<>")
+	if end < 0 || rest[end] != '}' {
+		return false
+	}
+	body := rest[:end]
+	return strings.Contains(body, ",") || strings.Contains(body, "..")
 }
 
 // consumeRedirect は index にあるリダイレクト演算子の最後の文字の位置を返す。

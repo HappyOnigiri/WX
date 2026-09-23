@@ -75,7 +75,7 @@ func TestLexPolicyCommandStructure(t *testing.T) {
 }
 
 func TestLexPolicyCommandMarksDynamicWords(t *testing.T) {
-	tokens, ok := lexPolicyCommand(`git checkout $A "$B" 'lit$C' * {} { ~/x "~" a~`)
+	tokens, ok := lexPolicyCommand(`git checkout $A "$B" 'lit$C' * {} { ~/x "~" a~ {a,b} x{1..3} '{a,b}' {a}`)
 	if !ok {
 		t.Fatal("command was not well formed")
 	}
@@ -95,6 +95,10 @@ func TestLexPolicyCommandMarksDynamicWords(t *testing.T) {
 		{value: "~/x", tilde: true},
 		{value: "~", quoted: true},
 		{value: "a~"},
+		{value: "{a,b}", globbed: true},
+		{value: "x{1..3}", globbed: true},
+		{value: "{a,b}", quoted: true},
+		{value: "{a}"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("words=%+v, want %+v", got, want)
