@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,8 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 		state.Session{ID: missingID, SlotID: missingID, State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken(missingID)}, ""); err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
 
 	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_quarantine_update BEFORE UPDATE ON slots WHEN NEW.state='QUARANTINED' BEGIN SELECT RAISE(ABORT,'injected quarantine failure'); END`); err != nil {
@@ -30,6 +34,67 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 	manager.reconcileArtifacts(ctx)
 	if slot, err := store.Slot(ctx, missingID); err != nil || slot.State != "LEASED" {
 		t.Fatalf("slot state changed despite injected quarantine failure: slot=%+v err=%v", slot, err)
+	}
+	if !strings.Contains(logs.String(), "quarantine missing owned path failed") {
+		t.Fatalf("missing-path quarantine failure was not logged: %s", logs.String())
+	}
+}
+
+func TestReconcileArtifactsDoesNotLogSuccessfulDiagnosticWritesAsFailures(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	orphanPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "wsp999", "orphan")
+	if err := os.MkdirAll(orphanPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := manager.artifactDiagnostics(ctx)
+	if !containsString(before["unknown_paths"].([]string), orphanPath) {
+		t.Fatalf("orphan path was not discovered before reconciliation: %v", before)
+	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	manager.reconcileArtifacts(ctx)
+
+	for _, message := range []string{"record quarantined artifact failed", "prune resolved quarantine records failed"} {
+		if strings.Contains(logs.String(), message) {
+			t.Fatalf("successful diagnostic persistence logged %q: %s", message, logs.String())
+		}
+	}
+}
+
+func TestReconcileArtifactsSchedulesRecoveredJobs(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	sessionID := "recover-preparing-slot"
+	session := state.Session{
+		ID: sessionID, WorkspaceID: string(workspaceRecord.ID), SlotID: sessionID,
+		State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken(sessionID),
+	}
+	if _, err := store.CreateSlotSession(ctx, testSlotRow(t, manager, string(workspaceRecord.ID), sessionID, 1, "PREPARING"), nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.reconcileArtifacts(ctx)
+
+	var queued *queuedJob
+	manager.jobQueue.mu.Lock()
+	for class := jobClassInteractive; class < jobClassCount && queued == nil; class++ {
+		for _, candidate := range manager.jobQueue.pending[class] {
+			if candidate.slotID == sessionID {
+				copy := candidate
+				queued = &copy
+				break
+			}
+		}
+	}
+	manager.jobQueue.mu.Unlock()
+	if queued == nil {
+		t.Fatal("reconcile did not queue the recovered prepare job")
+	}
+	job, err := store.JobByID(ctx, queued.id)
+	if err != nil || job.Kind != "PREPARE" || job.State != "PENDING" || job.SlotID != sessionID {
+		t.Fatalf("recovered job=%+v err=%v, want pending PREPARE for slot %s", job, err, sessionID)
 	}
 }
 
