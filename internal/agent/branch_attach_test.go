@@ -141,6 +141,8 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 		branchPolicyCase{command: "git -C " + fixture.tmp + " -C detached checkout other", cwd: fixture.main, want: branchPolicyAttach},
 		branchPolicyCase{command: "cd ../detached && git switch other", cwd: fixture.main, want: branchPolicyAttach},
 		branchPolicyCase{command: "(cd " + fixture.main + " && git status) && git switch other", cwd: fixture.detached, want: branchPolicyAttach},
+		// バックグラウンドの cd は後続の実行先を変えない。
+		branchPolicyCase{command: "cd ../main & git switch other", cwd: fixture.detached, want: branchPolicyAttach},
 	)
 	runBranchPolicyCases(t, cases)
 }
@@ -250,6 +252,9 @@ func TestClassifyBranchAttachFailsClosedWhenUnresolved(t *testing.T) {
 		"printf feature | parallel git checkout",
 		"cat <<EOF\n$(git switch other)\nEOF",
 		"cat <<'EOF'\ngit switch other",
+		// パイプラインの cd が後続へ引き継がれるかは shell によって違う。
+		"cd ../main | git switch other",
+		"echo | cd ../main; git switch other",
 	} {
 		cases = append(cases, branchPolicyCase{command: command, cwd: fixture.detached, want: branchPolicyUnresolved})
 	}

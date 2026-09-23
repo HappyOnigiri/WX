@@ -17,6 +17,10 @@ func policyTokenString(tokens []policyToken) string {
 			parts = append(parts, token.word.value)
 		case policyTokenSeparator:
 			parts = append(parts, ";")
+		case policyTokenPipe:
+			parts = append(parts, "|")
+		case policyTokenBackground:
+			parts = append(parts, "&")
 		case policyTokenOpen:
 			parts = append(parts, "(")
 		case policyTokenClose:
@@ -34,8 +38,8 @@ func TestLexPolicyCommandStructure(t *testing.T) {
 		ok            bool
 	}{
 		{command: "git switch other", want: "git switch other", ok: true},
-		{command: "a && b || c | d & e; f\ng", want: "a ; b ; c ; d ; e ; f ; g", ok: true},
-		{command: "a |& b", want: "a ; b", ok: true},
+		{command: "a && b || c | d & e; f\ng", want: "a ; b ; c | d & e ; f ; g", ok: true},
+		{command: "a |& b", want: "a | b", ok: true},
 		{command: "(cd x && git status)", want: "( cd x ; git status )", ok: true},
 		{command: "echo $(git switch x)", want: "echo $ ( git switch x )", ok: true},
 		{command: `git commit -m "a $(b) c"`, want: "git commit -m a $(b) c", ok: true},
@@ -114,6 +118,11 @@ func TestPolicyGitInvocationsTrackDirectories(t *testing.T) {
 		{command: "git -C child -C .. status", targets: []string{root}},
 		{command: "cd missing && git status", targets: []string{""}},
 		{command: "cd missing && cd " + child + " && git status", targets: []string{""}},
+		// `&` の左の cd は別プロセスで走り、パイプラインの cd は shell によって引き継ぎが違う。
+		{command: "cd child & git status", targets: []string{root}},
+		{command: "cd child | git status; git log", targets: []string{"", ""}},
+		{command: "echo | cd child; git status", targets: []string{""}},
+		{command: "git status | cat && git log", targets: []string{root, root}},
 		{command: "git -c x.y=z status", targets: []string{root}},
 		{command: `echo "{" && git status`, targets: []string{root}},
 		{command: "git", targets: []string{root}},

@@ -27,6 +27,9 @@ type policyTokenKind int
 const (
 	policyTokenWord policyTokenKind = iota
 	policyTokenSeparator
+	// policyTokenPipe と policyTokenBackground は区切りのうち、左の command を別プロセスで走らせ得るものである。
+	policyTokenPipe
+	policyTokenBackground
 	policyTokenOpen
 	policyTokenClose
 	// policyTokenRedirect の次の語はリダイレクト先で、コマンドの引数に数えない。
@@ -203,11 +206,16 @@ func (l *policyLexer) operator(char byte) bool {
 			l.index++
 		}
 		l.emit(policyTokenRedirect)
-	case char == '&' || char == '|':
-		if next == char || (char == '|' && next == '&') {
+	case next == char && (char == '&' || char == '|'):
+		l.index++
+		l.emit(policyTokenSeparator)
+	case char == '|':
+		if next == '&' {
 			l.index++
 		}
-		l.emit(policyTokenSeparator)
+		l.emit(policyTokenPipe)
+	case char == '&':
+		l.emit(policyTokenBackground)
 	case char == '(':
 		l.depth++
 		l.emit(policyTokenOpen)
@@ -355,16 +363,30 @@ func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []
 	var stack []string
 	var segment []commandWord
 	redirectTarget := false
-	process := func() bool {
+	// piped は直前の区切りがパイプで、いま読んでいる command がパイプラインの一部であることを表す。
+	piped := false
+	// process は区切り next の手前までの command を読む。
+	// `&` の左の command は別プロセスで走るので、その cd を後続へ引き継がない。
+	// パイプラインの要素は shell によって別プロセスかどうかが違うので、cd があれば以降の実行先を決められないものとする。
+	// commentlint:allow-long -- 区切りの種類で cd の引き継ぎを変える理由を残す
+	process := func(next policyTokenKind) bool {
 		parts := segment
 		segment = nil
 		if redirectTarget {
 			return false
 		}
+		previous := base
 		invocation, isGit, ok := policySegment(parts, &base)
 		if ok && isGit {
 			invocations = append(invocations, invocation)
 		}
+		switch {
+		case next == policyTokenBackground:
+			base = previous
+		case (next == policyTokenPipe || piped) && base != previous:
+			base = ""
+		}
+		piped = next == policyTokenPipe
 		return ok
 	}
 	for _, token := range append(tokens, policyToken{kind: policyTokenSeparator}) {
@@ -392,18 +414,18 @@ func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []
 			}
 			redirectTarget = true
 		case policyTokenOpen:
-			if !process() {
+			if !process(token.kind) {
 				return nil, false
 			}
 			stack = append(stack, base)
 		case policyTokenClose:
-			if !process() || len(stack) == 0 {
+			if !process(token.kind) || len(stack) == 0 {
 				return nil, false
 			}
 			base = stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-		case policyTokenSeparator:
-			if !process() {
+		case policyTokenSeparator, policyTokenPipe, policyTokenBackground:
+			if !process(token.kind) {
 				return nil, false
 			}
 		}
