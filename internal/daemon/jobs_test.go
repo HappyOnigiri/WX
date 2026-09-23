@@ -29,6 +29,24 @@ func TestScheduleDropsWorkAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestPreparationWasStartedReflectsStagedPreparationBoundary(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "preparation-boundary", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatalf("create preparing slot: %v", err)
+	}
+	if manager.preparationWasStarted(slot.ID) {
+		t.Fatal("preparation reported started before the staged boundary")
+	}
+	if err := store.BeginStagedPreparation(ctx, slot.ID); err != nil {
+		t.Fatalf("begin staged preparation: %v", err)
+	}
+	if !manager.preparationWasStarted(slot.ID) {
+		t.Fatal("preparation was not reported started after the staged boundary")
+	}
+}
+
 func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
