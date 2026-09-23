@@ -178,16 +178,17 @@ func checkoutAttaches(ctx context.Context, runner *gitx.Runner, target string, a
 	if hasWord(args, "-") {
 		return true, true
 	}
-	var candidate *commandWord
+	var positional []*commandWord
 	for index := range args {
 		if !strings.HasPrefix(args[index].value, "-") {
-			candidate = &args[index]
-			break
+			positional = append(positional, &args[index])
 		}
 	}
-	if candidate == nil {
+	// `checkout <tree-ish> <path>...` はパスを戻すだけで HEAD を動かさない。
+	if len(positional) != 1 {
 		return false, true
 	}
+	candidate := positional[0]
 	if !candidate.static() {
 		return false, false
 	}
@@ -197,6 +198,11 @@ func checkoutAttaches(ctx context.Context, runner *gitx.Runner, target string, a
 	branch := strings.TrimPrefix(candidate.value, "refs/heads/")
 	if _, err := runner.Run(ctx, target, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		return true, true
+	}
+	// ローカルブランチ以外で commit に解決できる引数は detach になる。remote の推測はこの解決に失敗したときだけ働く。
+	// commentlint:allow-long -- remote の推測より先に rev として解決する理由を残す
+	if _, err := runner.Run(ctx, target, "rev-parse", "--verify", "--quiet", candidate.value+"^{commit}"); err == nil {
+		return false, true
 	}
 	// `checkout foo` は origin/foo だけがある場合にも foo を作って attach する。
 	remotes, err := runner.Run(ctx, target, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes")

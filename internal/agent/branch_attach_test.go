@@ -43,6 +43,8 @@ func newBranchPolicyFixture(t *testing.T) branchPolicyFixture {
 	fixtureGit(t, fixture.main, "worktree", "add", "-q", "--detach", fixture.detached, "HEAD")
 	fixtureGit(t, fixture.main, "worktree", "add", "-q", "-b", "legacy-attached", fixture.attached)
 	fixtureGit(t, fixture.main, "update-ref", "refs/remotes/origin/remote-only", "HEAD")
+	// 通常の clone と同じく origin/HEAD を置き、remote の一覧に HEAD が現れる状態で判定する。
+	fixtureGit(t, fixture.main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/remote-only")
 	return fixture
 }
 
@@ -158,6 +160,11 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 		"git switch -d other",
 		"git checkout -- tracked.txt",
 		"git checkout other -- tracked.txt",
+		// `--` の無いパスの復元と、commit に解決できる ref は HEAD を attach しない。
+		"git checkout other tracked.txt",
+		"git checkout HEAD tracked.txt",
+		"git checkout HEAD",
+		"git checkout main~0",
 		"git checkout .",
 		"git checkout -p",
 		"git checkout --ours tracked.txt",
