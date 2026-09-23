@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -479,6 +480,21 @@ func policySegment(parts []commandWord, base *string) (invocation policyGitInvoc
 	if len(parts) == 0 {
 		return policyGitInvocation{}, false, true
 	}
+	commandIndex := 0
+	for commandIndex < len(parts) && !parts[commandIndex].quoted && isAssignmentWord(parts[commandIndex].value) {
+		commandIndex++
+	}
+	if commandIndex < len(parts) {
+		command := parts[commandIndex]
+		switch name := filepath.Base(command.value); {
+		case !command.quoted && command.value == "eval":
+			// eval は引数を連結して実行時にコマンドとして読むので、静的には追えない。
+			return policyGitInvocation{}, false, false
+		case nestedShellNames[name] && !slices.ContainsFunc(parts[commandIndex+1:], func(arg commandWord) bool { return !strings.HasPrefix(arg.value, "-") }):
+			// 引数の無い shell は stdin・heredoc・here-string からコマンドを読む。
+			return policyGitInvocation{}, false, false
+		}
+	}
 	for index, part := range parts {
 		if !part.quoted && (part.value == "pushd" || part.value == "popd") {
 			return policyGitInvocation{}, false, false
@@ -514,7 +530,9 @@ func policySegment(parts []commandWord, base *string) (invocation policyGitInvoc
 			return policyGitInvocation{}, false, false
 		}
 		for _, wrapper := range parts[:index] {
-			if name := filepath.Base(wrapper.value); name == "xargs" || name == "parallel" {
+			switch filepath.Base(wrapper.value) {
+			// find の -exec 系も xargs と同じく、見つかったパスを実行時に引数へ足す。
+			case "xargs", "parallel", "-exec", "-execdir", "-ok", "-okdir":
 				invocation.dynamic = true
 			}
 		}

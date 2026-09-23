@@ -279,6 +279,12 @@ func TestClassifyBranchAttachFailsClosedWhenUnresolved(t *testing.T) {
 		// 実行時に引数が足される。
 		"printf feature | xargs git checkout",
 		"printf feature | parallel git checkout",
+		"find . -name other -exec git checkout {} \\;",
+		// 実行時にコマンドとして読まれる文字列は静的に追えない。
+		"eval 'git switch other'",
+		"echo 'git switch other' | sh",
+		"bash <<< 'git switch other'",
+		"bash <<'EOF'\ngit switch other\nEOF",
 		"cat <<EOF\n$(git switch other)\nEOF",
 		"cat <<'EOF'\ngit switch other",
 		// パイプラインの cd が後続へ引き継がれるかは shell によって違う。
