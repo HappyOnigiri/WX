@@ -335,6 +335,28 @@ func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
 	}
 }
 
+// daemon を必要としない deny は readiness を待たずに出し、daemon に届かない場合も失わない。
+func TestManagedPreToolUseDeniesWithoutReachingTheDaemon(t *testing.T) {
+	clearHookEnvironment(t)
+	t.Setenv("WX_SESSION_ID", "wx")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
+	payload := `{"tool_name":"Agent","tool_input":{"prompt":"p","isolation":"worktree"}}`
+	output := captureHookStdout(t, func() {
+		if err := RunHook(context.Background(), "pre-tool-use", strings.NewReader(payload)); err != nil {
+			t.Fatalf("deny was not emitted before readiness: %v", err)
+		}
+	})
+	var decoded preToolUseHookOutput
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil || decoded.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("stdout %q is not a single deny: %v", output, err)
+	}
+	// deny でなければ従来どおり readiness を待ち、daemon に届かなければ失敗する。
+	if err := RunHook(context.Background(), "pre-tool-use", strings.NewReader(`{"tool_name":"Agent","tool_input":{"isolation":"remote"}}`)); err == nil {
+		t.Fatal("pre-tool-use without a deny succeeded through a missing daemon socket")
+	}
+}
+
 func TestHookRejectsInvalidReadinessTimeouts(t *testing.T) {
 	clearHookEnvironment(t)
 	t.Setenv("WX_SESSION_ID", "wx")

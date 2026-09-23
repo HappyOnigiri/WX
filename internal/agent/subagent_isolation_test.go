@@ -120,8 +120,9 @@ func TestPreToolUseHookDeniesSubagentWorktreeIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-		if methods := handler.methodsSnapshot(); len(methods) != 1 || methods[0] != "WaitReady" {
-			t.Fatalf("methods=%v, want [WaitReady]", methods)
+		// deny は daemon を必要としないので readiness を待たずに出す。
+		if methods := handler.methodsSnapshot(); len(methods) != 0 {
+			t.Fatalf("methods=%v, want no RPC before the deny", methods)
 		}
 		var decoded preToolUseHookOutput
 		if err := json.Unmarshal([]byte(output), &decoded); err != nil {
