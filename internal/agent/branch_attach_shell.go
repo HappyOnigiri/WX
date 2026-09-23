@@ -12,6 +12,9 @@ type commandWord struct {
 	quoted   bool
 	expanded bool
 	globbed  bool
+	// substitutions は語の中の二重引用符内の `$(...)` とバッククオートの本文で、語とは別のサブシェルとして判定する。
+	// commentlint:allow-long -- 本文を語に残したまま別に判定する理由を残す
+	substitutions [][]policyToken
 }
 
 // static は語が実行時の展開を受けない文字列かを返す。
@@ -54,6 +57,8 @@ type policyLexer struct {
 	wellFormed bool
 	// heredocDelimiter は直前が `<<` か `<<-` で、次の語が heredoc の終端語であることを表す。
 	heredocDelimiter, stripTabs bool
+	// depth は開いている括弧の数で、置換の本文の終端 `)` を入れ子の `)` と区別する。
+	depth int
 }
 
 // lexPolicyCommand は command を語と shell の演算子の列にする。
@@ -61,9 +66,22 @@ type policyLexer struct {
 // 対象の git 呼び出しの見逃しを防ぐ側の近似なので、引用・heredoc が閉じないときは ok=false を返す。
 // commentlint:allow-long -- lexShellCommand と分けた理由と、失敗の意味を残す
 func lexPolicyCommand(command string) (tokens []policyToken, ok bool) {
-	lexer := &policyLexer{command: command, wellFormed: true}
+	tokens, _, ok = lexPolicySpan(command, 0, 0)
+	return tokens, ok
+}
+
+// lexPolicySpan は start から字句解析する。closer が 0 でなければ、引用と括弧の外に現れた closer の位置で止まり、その位置を end に返す。
+// closer が現れないまま終わった場合は ok=false を返す。
+// commentlint:allow-long -- 置換の本文を同じ字句解析で読む契約を残す
+func lexPolicySpan(command string, start int, closer byte) (tokens []policyToken, end int, ok bool) {
+	lexer := &policyLexer{command: command, index: start, wellFormed: true}
+	closed := closer == 0
 	for ; lexer.index < len(command); lexer.index++ {
 		char := command[lexer.index]
+		if closer != 0 && lexer.quote == 0 && char == closer && lexer.depth == 0 {
+			closed = true
+			break
+		}
 		switch {
 		case lexer.quote == '\'':
 			lexer.singleQuoted(char)
@@ -74,10 +92,29 @@ func lexPolicyCommand(command string) (tokens []policyToken, ok bool) {
 		}
 	}
 	lexer.flush()
-	if lexer.quote != 0 || lexer.heredocDelimiter || len(lexer.heredocs) > 0 {
+	if !closed || lexer.quote != 0 || lexer.heredocDelimiter || len(lexer.heredocs) > 0 {
 		lexer.wellFormed = false
 	}
-	return lexer.tokens, lexer.wellFormed
+	return lexer.tokens, lexer.index, lexer.wellFormed
+}
+
+// substitution は index にある `$(` かバッククオートから始まる置換を読み、本文の token を語に付ける。
+// 語には置換の原文を残し、展開を含む印を付ける。本文が閉じなければ command 全体を解析できないものとする。
+// commentlint:allow-long -- 語の値と本文の判定を分けて持つ理由を残す
+func (l *policyLexer) substitution(bodyStart int, closer byte) {
+	start := l.index
+	inner, end, ok := lexPolicySpan(l.command, bodyStart, closer)
+	if !ok {
+		l.wellFormed = false
+		l.index = len(l.command)
+		return
+	}
+	for _, char := range []byte(l.command[start : end+1]) {
+		l.write(char)
+	}
+	l.current.expanded = true
+	l.current.substitutions = append(l.current.substitutions, inner)
+	l.index = end
 }
 
 func (l *policyLexer) next() byte {
@@ -130,7 +167,11 @@ func (l *policyLexer) doubleQuoted(char byte) {
 		if next != '\n' {
 			l.write(next)
 		}
-	case char == '$' || char == '`':
+	case char == '$' && next == '(':
+		l.substitution(l.index+2, ')')
+	case char == '`':
+		l.substitution(l.index+1, '`')
+	case char == '$':
 		l.current.expanded = true
 		l.write(char)
 	default:
@@ -168,8 +209,10 @@ func (l *policyLexer) operator(char byte) bool {
 		}
 		l.emit(policyTokenSeparator)
 	case char == '(':
+		l.depth++
 		l.emit(policyTokenOpen)
 	case char == ')':
+		l.depth--
 		l.emit(policyTokenClose)
 	case char == '<' || char == '>':
 		l.redirect()
@@ -216,9 +259,12 @@ func (l *policyLexer) unquoted(char byte) {
 		// `$(...)` の中身もコマンドとして読む。直前の語は展開を含むものとして閉じる。
 		l.write(char)
 		l.current.expanded = true
+		l.depth++
 		l.emit(policyTokenOpen)
 		l.index++
-	case char == '$' || char == '`':
+	case char == '`':
+		l.substitution(l.index+1, '`')
+	case char == '$':
 		l.write(char)
 		l.current.expanded = true
 	case char == '*' || char == '?' || char == '[':
@@ -301,6 +347,11 @@ func policyGitInvocations(tokens []policyToken, cwd string) (invocations []polic
 	if base == "" {
 		return nil, false
 	}
+	return policyGitInvocationsFrom(tokens, base)
+}
+
+// policyGitInvocationsFrom は解決済みの base から tokens を追う。base が空なら実行先を決められない呼び出しとして返す。
+func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []policyGitInvocation, resolved bool) {
 	var stack []string
 	var segment []commandWord
 	redirectTarget := false
@@ -319,6 +370,14 @@ func policyGitInvocations(tokens []policyToken, cwd string) (invocations []polic
 	for _, token := range append(tokens, policyToken{kind: policyTokenSeparator}) {
 		switch token.kind {
 		case policyTokenWord:
+			// 置換の本文はその時点の実行先で走るサブシェルで、中の cd は外へ持ち出さない。
+			for _, inner := range token.word.substitutions {
+				nested, ok := policyGitInvocationsFrom(inner, base)
+				if !ok {
+					return nil, false
+				}
+				invocations = append(invocations, nested...)
+			}
 			if redirectTarget {
 				redirectTarget = false
 				continue

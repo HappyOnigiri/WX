@@ -115,6 +115,11 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 		"git switch other # back to other",
 		"git status && git switch other",
 		"echo $(git checkout other)",
+		// 二重引用符内とバッククオートの置換の本文も実行される。
+		`x="$(git switch other 2>&1)"`,
+		`echo "$(git checkout other)"`,
+		"echo `git checkout other`",
+		`echo "$(cd .. && echo "$(git -C detached switch other)")"`,
 		"git fetch origin\ngit switch other",
 	} {
 		cases = append(cases, branchPolicyCase{command: command, cwd: fixture.detached, want: branchPolicyAttach})
@@ -164,6 +169,8 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 		"make checkout",
 		"git commit -m \"$(cat <<'EOF'\nswitch to the new parser\n\ngit checkout other is no longer needed\nEOF\n)\"",
 		"cat > notes.md <<'EOF'\ngit checkout other\ndon't switch here\nEOF",
+		"git commit -m \"$(cat <<'EOF'\ndon't git checkout other (yet\nEOF\n)\"",
+		`echo "branch: $(git branch --show-current)" && git switch --detach`,
 		"cat > notes.md <<-EOF\n\tgit switch other\n\tEOF\ngit status",
 		"grep switch <<< 'git switch other'",
 		// find -exec の `{}` を群の括弧と取り違えない。
