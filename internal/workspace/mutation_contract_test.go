@@ -160,6 +160,20 @@ func TestCloseIdentityDirectoryAcceptsMissingDescriptor(t *testing.T) {
 	closeIdentityDirectory(nil)
 }
 
+func TestCloseIdentityDirectoryClosesDescriptor(t *testing.T) {
+	t.Parallel()
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = directory.Close() })
+
+	closeIdentityDirectory(directory)
+	if _, err := directory.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Stat() error=%v, want %v", err, os.ErrClosed)
+	}
+}
+
 func TestExistingTargetStateRejectsMarkerOutsideRoot(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
