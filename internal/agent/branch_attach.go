@@ -126,7 +126,7 @@ func classifyBranchAttach(ctx context.Context, runner *gitx.Runner, command, cwd
 		case "switch":
 			attaches, known = switchAttaches(invocation.args), true
 		default:
-			attaches, known = symbolicRefAttaches(invocation.args), true
+			attaches, known = symbolicRefAttaches(invocation.args)
 		}
 		if !known {
 			return branchPolicyUnresolved
@@ -236,8 +236,10 @@ func switchAttaches(args []commandWord) bool {
 }
 
 // symbolicRefAttaches は HEAD へ ref を書き込む形かを返す。-m と --reason の値は位置引数に数えない。
-func symbolicRefAttaches(args []commandWord) bool {
-	var positional []string
+// 書き込む形なのに対象が静的でなければ、第 2 戻り値の false で判定できないことを返す。
+// HEAD へ書き込む ref はどれもブランチの attach なので、ref の値は見ない。
+func symbolicRefAttaches(args []commandWord) (bool, bool) {
+	var positional []commandWord
 	skipValue := false
 	for _, arg := range args {
 		switch {
@@ -246,10 +248,16 @@ func symbolicRefAttaches(args []commandWord) bool {
 		case arg.value == "-m" || arg.value == "--reason":
 			skipValue = true
 		case !strings.HasPrefix(arg.value, "-"):
-			positional = append(positional, arg.value)
+			positional = append(positional, arg)
 		}
 	}
-	return len(positional) >= 2 && positional[0] == "HEAD"
+	if len(positional) < 2 {
+		return false, true
+	}
+	if !positional[0].static() {
+		return false, false
+	}
+	return positional[0].value == "HEAD", true
 }
 
 func hasWord(args []commandWord, values ...string) bool {

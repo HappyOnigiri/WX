@@ -114,6 +114,7 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 		"git switch -Cnew-branch",
 		"git symbolic-ref HEAD refs/heads/other",
 		"git symbolic-ref -m reason HEAD refs/heads/other",
+		"git symbolic-ref HEAD refs/heads/$BRANCH",
 		"git -c core.quotepath=false switch other",
 		"/usr/bin/git switch other",
 		// 一次の正規表現が拾わない大域オプションや引用も、解析で git 呼び出しとして読む。
@@ -181,6 +182,7 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 		"git symbolic-ref HEAD",
 		"git symbolic-ref --short HEAD",
 		"git symbolic-ref -m reason HEAD",
+		"git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/remote-only",
 		// ワードが subcommand ではない形は、引用の有無にかかわらず通す。
 		`git commit -m "see git switch docs"`,
 		`git log --oneline --grep "git checkout"`,
@@ -251,6 +253,8 @@ func TestClassifyBranchAttachFailsClosedWhenUnresolved(t *testing.T) {
 		"git checkout `cat ref.txt`",
 		"git checkout $(cat ref.txt)",
 		"git checkout feature-*",
+		// 書き込む形の symbolic-ref も、対象が静的でなければ決められない。
+		`REF=HEAD; git symbolic-ref "$REF" refs/heads/other`,
 		// 実行時に引数が足される。
 		"printf feature | xargs git checkout",
 		"printf feature | parallel git checkout",
