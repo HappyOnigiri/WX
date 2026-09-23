@@ -31,6 +31,22 @@ func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
 	}
 }
 
+func TestDaemonRuntimeLockReleaseAllowsNextOwner(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "daemon.lock")
+	first, err := acquireDaemonLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseDaemonLock(first)
+
+	second, err := acquireDaemonLock(path)
+	if err != nil {
+		t.Fatalf("acquire lock after releasing its owner: %v", err)
+	}
+	releaseDaemonLock(second)
+}
+
 func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {
 	t.Parallel()
 	for value, want := range map[string]slog.Level{
