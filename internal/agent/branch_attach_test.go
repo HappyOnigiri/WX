@@ -110,6 +110,13 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 		"git symbolic-ref -m reason HEAD refs/heads/other",
 		"git -c core.quotepath=false switch other",
 		"/usr/bin/git switch other",
+		// 一次の正規表現が拾わない大域オプションや引用も、解析で git 呼び出しとして読む。
+		"git -P switch other",
+		"git --no-optional-locks switch other",
+		"git --config-env core.editor=EDITOR switch other",
+		`"git" switch other`,
+		`git "switch" other`,
+		`\git switch other`,
 		"git checkout other 2>/dev/null",
 		"git checkout other >/dev/null 2>&1",
 		"git switch other # back to other",

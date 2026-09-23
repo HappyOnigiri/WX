@@ -35,9 +35,10 @@ const branchPolicyGitTimeout = 10 * time.Second
 // git worktree add は worktreeAddHookOutput が扱うので含めない。
 var branchPolicySubcommands = map[string]bool{"checkout": true, "switch": true, "symbolic-ref": true}
 
-// branchPolicyGitCommand は command 文字列に対象の git 呼び出しらしい形があるかを広めに拾う。
-// 解析できない command を deny に倒すかどうかの条件で、引用の中の一致も拾うため誤って通す方向には働かない。
-// commentlint:allow-long -- 解析前の広い一致が fail closed の条件である理由を残す
+// branchPolicyGitCommand は command 文字列に対象の git 呼び出しらしい形があるかを拾う。
+// 解析に失敗した command を deny に倒すかどうかの条件にだけ使う。解析に成功した command は一致の有無にかかわらず呼び出しごとに判定する。
+// 引用の中の一致も拾う一方、`git -P` などの一覧にない大域オプションや引用された git は拾わないので、解析の代わりにはならない。
+// commentlint:allow-long -- 解析失敗時だけの条件である理由と、拾わない形を残す
 var branchPolicyGitCommand = regexp.MustCompile(`(?:^|[\s;&|('"` + "`" + `])(?:\S*/)?git` +
 	`(?:\s+(?:-[cC]\s*(?:[^\s'"]*(?:'[^']*'|"[^"]*")|\S+)|-p|--paginate|--no-pager|--literal-pathspecs|--(?:git-dir|work-tree|exec-path)=\S+))*` +
 	`\s+(?:checkout|switch|symbolic-ref)(?:[\s);&|'"` + "`" + `]|$)`)
@@ -92,16 +93,18 @@ const (
 // classifyBranchAttach は command 中の git 呼び出しを実行先ごとに判定する。
 // 実行先が linked worktree である呼び出しだけを attach の判定にかけ、最初に見つかった違反を返す。
 func classifyBranchAttach(ctx context.Context, runner *gitx.Runner, command, cwd string) branchPolicyVerdict {
-	if !branchPolicyGitCommand.MatchString(command) {
-		return branchPolicyAllow
+	// 解析できない command は、対象の git 呼び出しらしい形がある場合だけ deny に倒す。
+	unresolved := branchPolicyAllow
+	if branchPolicyGitCommand.MatchString(command) {
+		unresolved = branchPolicyUnresolved
 	}
 	tokens, wellFormed := lexPolicyCommand(command)
 	if !wellFormed {
-		return branchPolicyUnresolved
+		return unresolved
 	}
 	invocations, resolved := policyGitInvocations(tokens, cwd)
 	if !resolved {
-		return branchPolicyUnresolved
+		return unresolved
 	}
 	for _, invocation := range invocations {
 		if !branchPolicySubcommands[invocation.subcommand] {

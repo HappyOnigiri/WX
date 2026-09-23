@@ -489,6 +489,9 @@ func parsePolicyGitInvocation(args []commandWord, base string) (policyGitInvocat
 			}
 		case strings.HasPrefix(option, "--git-dir") || strings.HasPrefix(option, "--work-tree"):
 			return policyGitInvocation{}, false
+		case option == "--namespace" || option == "--config-env":
+			// 次の語は値で、subcommand ではない。
+			index++
 		case !strings.HasPrefix(option, "-"):
 			return policyGitInvocation{subcommand: option, args: args[index+1:], target: target}, true
 		}
