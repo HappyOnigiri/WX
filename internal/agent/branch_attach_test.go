@@ -238,6 +238,8 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 		"git checkout --detach other && find . -name '*.go' -exec wc -l {} \\;",
 		"git worktree add --detach " + filepath.Join(fixture.tmp, "new-wt") + " HEAD",
 		"git worktree add -b feature " + filepath.Join(fixture.tmp, "new-wt") + " HEAD",
+		"git --no-pager worktree add " + filepath.Join(fixture.tmp, "new-wt") + " HEAD",
+		"git worktree add -d " + filepath.Join(fixture.tmp, "new-wt") + " HEAD",
 	} {
 		cases = append(cases, branchPolicyCase{command: command, cwd: fixture.detached, want: branchPolicyAllow})
 	}
