@@ -76,3 +76,9 @@ func TestCodexConfigValueMutationBoundariesRequireARealProjectsKey(t *testing.T)
 		}
 	}
 }
+
+func TestCodexConfigValueControlsProjectsRejectsUnterminatedQuotedKey(t *testing.T) {
+	if got := codexConfigValueControlsProjects(`"projects=1`); got {
+		t.Fatal("unterminated quoted key must not control projects")
+	}
+}
