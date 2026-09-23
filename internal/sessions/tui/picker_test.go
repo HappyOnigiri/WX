@@ -106,6 +106,13 @@ func TestPickerNavigationUsesTwoLineRows(t *testing.T) {
 	}
 }
 
+func TestPickerVisibleRowsAccountsForStatusLine(t *testing.T) {
+	m := pickerModel{height: 14, statusID: "tui.picker.no_match"}
+	if got := m.visibleRows(); got != 3 {
+		t.Fatalf("visible rows with status=%d, want 3", got)
+	}
+}
+
 // TestPickerEnsureVisibleRevealsBoundaryRow は、選択行が表示領域の直後へ
 // 移った時点で offset を 1 行進めることを確かめる。
 func TestPickerEnsureVisibleRevealsBoundaryRow(t *testing.T) {
