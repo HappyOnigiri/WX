@@ -2,9 +2,16 @@ package state
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
+
+type mutationTestCommitter struct {
+	err error
+}
+
+func (c mutationTestCommitter) Commit() error { return c.err }
 
 func TestMutationFillSlotRepositoriesPrefersSessionForDetachedRows(t *testing.T) {
 	t.Parallel()
@@ -60,5 +67,14 @@ func TestMutationStandbyCapacityAndGenerationChecksCommitSuccessfully(t *testing
 	reserved, err = store.ReserveStandbyIfNeeded(ctx, slot, 2)
 	if err != nil || reserved {
 		t.Fatalf("stale-generation reserve=%v err=%v", reserved, err)
+	}
+}
+
+func TestMutationStaleStandbyGenerationPropagatesCommitFailure(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("commit failed")
+	reserved, err := finishUnreservedStandbyReservation(mutationTestCommitter{err: wantErr})
+	if reserved || !errors.Is(err, wantErr) {
+		t.Fatalf("stale-generation reservation=%v err=%v, want false and commit error", reserved, err)
 	}
 }

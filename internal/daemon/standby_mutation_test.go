@@ -629,3 +629,23 @@ func TestReserveStandbySlotDoesNotLogFalseQuarantineFailure(t *testing.T) {
 		t.Fatalf("logged a false quarantine failure: %s", logs.String())
 	}
 }
+
+func TestScheduleStandbyJobSkipsUnreservedSlot(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{ctx: context.Background(), jobQueue: newJobQueue(1)}
+	defer manager.jobQueue.close()
+	pending := func() int {
+		interactive, _ := manager.jobQueue.counts(jobClassInteractive)
+		maintenance, _ := manager.jobQueue.counts(jobClassMaintenance)
+		return interactive + maintenance
+	}
+
+	manager.scheduleStandbyJob(state.Job{})
+	if got := pending(); got != 0 {
+		t.Fatalf("pending jobs after an unreserved slot=%d, want 0", got)
+	}
+	manager.scheduleStandbyJob(state.Job{ID: "standby-job", Kind: "PREPARE"})
+	if got := pending(); got != 1 {
+		t.Fatalf("pending jobs after a reserved slot=%d, want 1", got)
+	}
+}

@@ -113,12 +113,16 @@ func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspa
 		if err != nil {
 			return err
 		}
-		if job.ID == "" {
-			continue
-		}
-		m.schedule(job)
+		m.scheduleStandbyJob(job)
 	}
 	return nil
+}
+
+func (m *Manager) scheduleStandbyJob(job state.Job) {
+	if job.ID == "" {
+		return
+	}
+	m.schedule(job)
 }
 
 // workspaceConfigurationChanged は補充計画の入力が再読込で変わったかを判定する。
