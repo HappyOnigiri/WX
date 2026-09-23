@@ -401,3 +401,93 @@ func TestDeleteSnapshotRefsRemovesTheSubmoduleCapsule(t *testing.T) {
 		t.Fatalf("second delete: %v", err)
 	}
 }
+
+// TestDeleteSubmoduleCapsuleRefsReportsCompareAndDeleteRace は、確認後に ref が進んだとき
+// compare-and-delete の失敗を返し、新しい target を残すことを確認する。
+func TestDeleteSubmoduleCapsuleRefsReportsCompareAndDeleteRace(t *testing.T) {
+	_, repo, manager, _ := archiveFixture(t)
+	moduleDir := filepath.Join(string(repo.CommonDir), "modules", "child")
+	if err := os.MkdirAll(moduleDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, moduleDir, "init", "--bare")
+	ref := "refs/wx/recovery/session/repository/submodule/child"
+	objectPath := filepath.Join(t.TempDir(), "capsule-object")
+	if err := os.WriteFile(objectPath, []byte("capsule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantOID := gitCommand(t, moduleDir, "--git-dir=.", "hash-object", "-w", objectPath)
+	if err := os.WriteFile(objectPath, []byte("advanced capsule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	advancedOID := gitCommand(t, moduleDir, "--git-dir=.", "hash-object", "-w", objectPath)
+	gitCommand(t, moduleDir, "update-ref", ref, wantOID)
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "replaced")
+	wrapper := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+set -eu
+if [ "$1" = "--git-dir=." ] && [ "$2" = "update-ref" ] && [ "$3" = "-d" ] && [ "$4" = "$WX_CAPSULE_REF" ] && [ ! -e "$WX_CAPSULE_RACE_MARKER" ]; then
+  : > "$WX_CAPSULE_RACE_MARKER"
+  "$WX_REAL_GIT" --git-dir=. update-ref "$WX_CAPSULE_REF" "$WX_CAPSULE_ADVANCED_OID" "$WX_CAPSULE_EXPECTED_OID"
+fi
+exec "$WX_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_REAL_GIT", gitPath)
+	t.Setenv("WX_CAPSULE_REF", ref)
+	t.Setenv("WX_CAPSULE_RACE_MARKER", marker)
+	t.Setenv("WX_CAPSULE_ADVANCED_OID", advancedOID)
+	t.Setenv("WX_CAPSULE_EXPECTED_OID", wantOID)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	snapshot := state.SubmoduleSnapshot{Name: "child", CapsuleRef: ref, CapsuleOID: wantOID}
+	err = manager.deleteSubmoduleCapsuleRefs(context.Background(), repo, []state.SubmoduleSnapshot{snapshot})
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("race wrapper did not advance the capsule ref: %v", err)
+	}
+	if got := gitCommand(t, moduleDir, "--git-dir=.", "show-ref", "--verify", "--hash", ref); got != advancedOID {
+		t.Fatalf("capsule ref after failed deletion=%s, want advanced target %s", got, advancedOID)
+	}
+	if err == nil {
+		t.Fatal("compare-and-delete race was reported as success")
+	}
+}
+
+func TestDeleteSubmoduleCapsuleRefsDeletesEveryRef(t *testing.T) {
+	_, repo, manager, _ := archiveFixture(t)
+	moduleDir := filepath.Join(string(repo.CommonDir), "modules", "child")
+	if err := os.MkdirAll(moduleDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, moduleDir, "init", "--bare")
+	objectPath := filepath.Join(t.TempDir(), "capsule-object")
+	if err := os.WriteFile(objectPath, []byte("capsule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oid := gitCommand(t, moduleDir, "--git-dir=.", "hash-object", "-w", objectPath)
+	refs := []string{
+		"refs/wx/recovery/session/repository/submodule/first",
+		"refs/wx/recovery/session/repository/submodule/second",
+	}
+	snapshots := make([]state.SubmoduleSnapshot, 0, len(refs))
+	for _, ref := range refs {
+		gitCommand(t, moduleDir, "update-ref", ref, oid)
+		snapshots = append(snapshots, state.SubmoduleSnapshot{Name: "child", CapsuleRef: ref, CapsuleOID: oid})
+	}
+
+	if err := manager.deleteSubmoduleCapsuleRefs(context.Background(), repo, snapshots); err != nil {
+		t.Fatalf("delete capsule refs: %v", err)
+	}
+	remaining := gitCommand(t, moduleDir, "--git-dir=.", "for-each-ref", "--format=%(refname)", "refs/wx/recovery")
+	if remaining != "" {
+		t.Fatalf("capsule refs left in the local module:\n%s", remaining)
+	}
+}
