@@ -414,7 +414,15 @@ func TestDescriptionLinesHandlesExactSelectionBoundaries(t *testing.T) {
 		t.Fatalf("workspace description=%q, want target path", got)
 	}
 
-	m.settingsOpen, m.settingsEnv, m.selected = true, 0, len(m.configItems())
+	m.settingsOpen, m.settingsEnv = true, 0
+	items := m.configItems()
+	if len(items) == 0 {
+		t.Fatal("system settings are empty, want an exact end-of-list selection")
+	}
+	m.selected = len(items)
+	if got := m.itemCount(); got != len(items) {
+		t.Fatalf("settings item count=%d, want %d", got, len(items))
+	}
 	if got := m.descriptionLines(80); got != nil {
 		t.Fatalf("out-of-range setting description=%q, want nil", got)
 	}
