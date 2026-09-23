@@ -133,6 +133,8 @@ func TestClassifyBranchAttachInLinkedWorktree(t *testing.T) {
 		`x="$(git switch other 2>&1)"`,
 		`echo "$(git checkout other)"`,
 		"echo `git checkout other`",
+		"cat <(git switch other)",
+		"git switch other > >(tee switch.log)",
 		`echo "$(cd .. && echo "$(git -C detached switch other)")"`,
 		"git fetch origin\ngit switch other",
 	} {
@@ -209,6 +211,8 @@ func TestClassifyBranchAttachAllowsLegitimateOperations(t *testing.T) {
 		`echo "branch: $(git branch --show-current)" && git switch --detach`,
 		"cat > notes.md <<-EOF\n\tgit switch other\n\tEOF\ngit status",
 		"grep switch <<< 'git switch other'",
+		// プロセス置換の本文も外の command も、対象外なら通す。
+		"diff <(git show HEAD:tracked.txt) tracked.txt && git checkout -- tracked.txt",
 		// find -exec の `{}` を群の括弧と取り違えない。
 		"git checkout --detach other && find . -name '*.go' -exec wc -l {} \\;",
 		"git worktree add --detach " + filepath.Join(fixture.tmp, "new-wt") + " HEAD",

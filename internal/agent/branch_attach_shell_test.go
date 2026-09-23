@@ -127,6 +127,8 @@ func TestPolicyGitInvocationsTrackDirectories(t *testing.T) {
 		{command: "echo | cd child; git status", targets: []string{""}},
 		{command: "git status | cat && git log", targets: []string{root, root}},
 		{command: "git -c x.y=z status", targets: []string{root}},
+		{command: "diff <(cd child && git show) x; git log", targets: []string{child, root}},
+		{command: "git diff > >(cd child && git apply) && git log", targets: []string{child, root, root}},
 		{command: `echo "{" && git status`, targets: []string{root}},
 		{command: "git", targets: []string{root}},
 	}

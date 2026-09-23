@@ -353,6 +353,13 @@ type policyGitInvocation struct {
 	dynamic bool
 }
 
+// policyFrame はサブシェルに入る前の状態で、閉じ括弧で戻す。segment はプロセス置換の外の command の読みかけである。
+type policyFrame struct {
+	base    string
+	segment []commandWord
+	piped   bool
+}
+
 // policyGitInvocations は cd とサブシェルを出現順に追い、git 呼び出しと各実行先を列挙する。
 // 実行先や構造を静的に追えない形があれば resolved=false を返す。
 func policyGitInvocations(tokens []policyToken, cwd string) (invocations []policyGitInvocation, resolved bool) {
@@ -365,7 +372,7 @@ func policyGitInvocations(tokens []policyToken, cwd string) (invocations []polic
 
 // policyGitInvocationsFrom は解決済みの base から tokens を追う。base が空なら実行先を決められない呼び出しとして返す。
 func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []policyGitInvocation, resolved bool) {
-	var stack []string
+	var stack []policyFrame
 	var segment []commandWord
 	redirectTarget := false
 	// piped は直前の区切りがパイプで、いま読んでいる command がパイプラインの一部であることを表す。
@@ -394,7 +401,8 @@ func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []
 		piped = next == policyTokenPipe
 		return ok
 	}
-	for _, token := range append(tokens, policyToken{kind: policyTokenSeparator}) {
+	all := append(append([]policyToken(nil), tokens...), policyToken{kind: policyTokenSeparator})
+	for index, token := range all {
 		switch token.kind {
 		case policyTokenWord:
 			// 置換の本文はその時点の実行先で走るサブシェルで、中の cd は外へ持ち出さない。
@@ -414,21 +422,31 @@ func policyGitInvocationsFrom(tokens []policyToken, base string) (invocations []
 			}
 			segment = append(segment, token.word)
 		case policyTokenRedirect:
-			if redirectTarget {
+			// `> >(...)` の 2 つ目の `>` はプロセス置換の一部で、1 つ目のリダイレクト先になる。
+			if redirectTarget && all[index+1].kind != policyTokenOpen {
 				return nil, false
 			}
 			redirectTarget = true
 		case policyTokenOpen:
+			if redirectTarget {
+				// `<(...)` と `>(...)` はプロセス置換で、本文をサブシェルとして読んだ後に外の command の続きへ戻る。
+				// commentlint:allow-long -- 外の command を保存したまま本文を読む理由を残す
+				redirectTarget = false
+				stack = append(stack, policyFrame{base: base, segment: segment, piped: piped})
+				segment, piped = nil, false
+				continue
+			}
 			if !process(token.kind) {
 				return nil, false
 			}
-			stack = append(stack, base)
+			stack = append(stack, policyFrame{base: base})
 		case policyTokenClose:
 			if !process(token.kind) || len(stack) == 0 {
 				return nil, false
 			}
-			base = stack[len(stack)-1]
+			frame := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			base, segment, piped = frame.base, frame.segment, frame.piped
 		case policyTokenSeparator, policyTokenPipe, policyTokenBackground:
 			if !process(token.kind) {
 				return nil, false
