@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`wx`は、Claude CodeとCodexをdaemon管理のdetached worktreeで起動するGo製CLI + daemonである。
+Worktree X（コマンド名`wx`）は、Claude CodeとCodexをdaemon管理のdetached worktreeで起動するGo製CLI + daemonである。
 機能と運用の複雑さは単一ユーザー・単一マシンを前提に判断する。
 実行対象はmacOSのみ（状態・socketは`~/Library`配下、常駐はLaunchAgent）で、linuxは退行検出用のビルド・テスト対象とする。
 CIのランナーは全てlinuxなので、platform依存の実装を触ったら[部分検証](docs/worktree-copy.md#部分検証)の手順を手元で行う。
