@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,12 +14,23 @@ import (
 	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func TestPlacementsForSeparatesWorkspaceRoot(t *testing.T) {
 	placements := []state.Placement{{RepositoryID: "repository", RelativePath: "repo"}, {RelativePath: "root"}}
 	if got := placementsFor(placements, ""); len(got) != 1 || got[0].RelativePath != "root" {
 		t.Fatalf("root placements=%+v", got)
+	}
+}
+
+// 予約前の区間は、区間名の "-" を "_" に置き換えた`precheck_<区間>_ms`の key で ms 単位の合計を出す。
+func TestStandbyUpdatePlanTimingLogArgs(t *testing.T) {
+	plan := standbyUpdatePlan{timings: []workspace.Phase{{Name: "candidate-ready", Count: 2, Total: 1500 * time.Millisecond}, {Name: "placements", Count: 1, Total: 3 * time.Millisecond}}}
+	got := plan.timingLogArgs()
+	want := []any{"precheck_candidate_ready_ms", int64(1500), "precheck_placements_ms", int64(3)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("timing log args=%v, want %v", got, want)
 	}
 }
 

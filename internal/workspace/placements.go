@@ -21,6 +21,15 @@ import (
 
 // RepositoryPlacements はGit外から配置するcopy/linkをfile単位で返す。
 func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repository, oid string) ([]state.Placement, error) {
+	tree, err := p.ListTreeLeaves(ctx, repo, oid)
+	if err != nil {
+		return nil, err
+	}
+	return p.RepositoryPlacementsInTree(ctx, repo, tree)
+}
+
+// RepositoryPlacementsInTree は列挙済みのtreeを使うRepositoryPlacementsで、同じtreeを読む他の検査と列挙を共有する。
+func (p *Preparer) RepositoryPlacementsInTree(ctx context.Context, repo discovery.Repository, tree TreeLeaves) ([]state.Placement, error) {
 	mainPath := string(repo.MainPath)
 	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
 	if err != nil {
@@ -31,10 +40,7 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 	if err != nil {
 		return nil, err
 	}
-	tracked, err := p.trackedPathsAt(ctx, repo, oid)
-	if err != nil {
-		return nil, err
-	}
+	tracked := tree.paths
 	placements := make(map[string]state.Placement)
 	for _, root := range rules.copyRules() {
 		clean, err := safeRelative(root)

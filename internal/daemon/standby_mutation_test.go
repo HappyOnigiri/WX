@@ -143,7 +143,7 @@ func TestPlanStandbyUpdateRecordsFirstMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := f.manager.planStandbyUpdate(ctx, f.workspace, slot, resolved)
+	plan, err := f.manager.planStandbyUpdate(ctx, f.workspace, slot, resolved, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestPlanStandbyUpdateRejectsMissingMultiRepositoryRoot(t *testing.T) {
 	ctx, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t, "multi_repository")
 	slot := testSlotRow(t, manager, string(workspaceRecord.ID), "missing-multi-root", 1, "READY")
 	slot.PlacementHistoryComplete = true
-	if _, err := manager.planStandbyUpdate(ctx, workspaceRecord, slot, nil); err == nil {
+	if _, err := manager.planStandbyUpdate(ctx, workspaceRecord, slot, nil, nil); err == nil {
 		t.Fatal("multi-repository plan accepted a missing slot root")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,7 +57,11 @@ func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
 			newOID := gitOutput(t, repository, "rev-parse", "HEAD")
 			preparer := Preparer{Git: &gitx.Runner{Timeout: 30 * time.Second}}
 			repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
-			err := preparer.rejectChangedAttributes(context.Background(), repo, oldOID, newOID)
+			diff, err := preparer.readUpdateTreeDiff(context.Background(), repo, oldOID, newOID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = diff.rejectIneligible()
 			if testCase.ineligible != errors.Is(err, ErrUpdateIneligible) {
 				t.Fatalf("ineligible=%v err=%v", testCase.ineligible, err)
 			}
@@ -67,13 +72,53 @@ func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
 	}
 }
 
-func TestPathsConflictAnyIncludesAncestors(t *testing.T) {
+func TestTreeLeavesConflictsIncludeAncestorsAndDescendants(t *testing.T) {
 	t.Parallel()
-	if !pathsConflictAny("cache", map[string]bool{"cache/file": true}) {
-		t.Fatal("ancestor collision was missed")
+	tree := TreeLeaves{paths: map[string]bool{"cache/file": true, "leaf": true}}
+	directories := tree.directories()
+	for _, path := range []string{"cache", "cache/file", "leaf", "leaf/child"} {
+		if !tree.conflicts(path, directories) {
+			t.Fatalf("collision with %s was missed", path)
+		}
 	}
-	if pathsConflictAny("cache-a", map[string]bool{"cache-b": true}) {
-		t.Fatal("unrelated paths collided")
+	for _, path := range []string{"cache-a", "cache/other", "leaf-b"} {
+		if tree.conflicts(path, directories) {
+			t.Fatalf("unrelated path %s collided", path)
+		}
+	}
+}
+
+// diff-treeの出力から、追加されたpath・要求OIDでのmode・更新不能条件を読み取る。
+// rename検出を切った出力は1件につきpathを1つだけ持ち、型変化はDとAの組、または状態Tで現れる。
+func TestParseUpdateTreeDiff(t *testing.T) {
+	t.Parallel()
+	record := func(oldMode, newMode, status, path string) string {
+		return ":" + oldMode + " " + newMode + " " + strings.Repeat("1", 40) + " " + strings.Repeat("2", 40) + " " + status + "\x00" + path + "\x00"
+	}
+	diff, err := parseUpdateTreeDiff(record("100644", "000000", "D", "gone") + record("000000", "100755", "A", "dir/new") + record("100644", "120000", "T", "link") + record("100644", "100644", "M", "sub/.gitattributes/x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.added) != 1 || diff.added[0] != filepath.Join("dir", "new") {
+		t.Fatalf("added=%v, want only dir/new", diff.added)
+	}
+	if diff.newModes["gone"] != "000000" || diff.newModes["dir/new"] != "100755" || diff.newModes["link"] != "120000" {
+		t.Fatalf("newModes=%v", diff.newModes)
+	}
+	if !diff.attributes || diff.modules || diff.gitlinks {
+		t.Fatalf("attributes=%v modules=%v gitlinks=%v, want only attributes", diff.attributes, diff.modules, diff.gitlinks)
+	}
+	gitlink, err := parseUpdateTreeDiff(record("160000", "160000", "M", "sub") + record("100644", "100644", "M", ".gitmodules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gitlink.gitlinks || !gitlink.modules || !errors.Is(gitlink.rejectIneligible(), ErrUpdateIneligible) {
+		t.Fatalf("gitlink diff=%+v was not rejected", gitlink)
+	}
+	for _, malformed := range []string{"garbage\x00path\x00", ":100644 100644 a b\x00path\x00", record("100644", "100644", "M", "")} {
+		if _, err := parseUpdateTreeDiff(malformed); err == nil {
+			t.Fatalf("malformed diff %q was accepted", malformed)
+		}
 	}
 }
 
@@ -86,55 +131,39 @@ func TestValidateUpdateCandidateRejectsInvalidRecordedPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := []state.Placement{{RelativePath: "missing", Kind: "copy", ContentSHA256: "hash"}}
-	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, f.head, f.head, previous, nil)
+	err := validateCollisionCandidate(ctx, f.preparer, f.repo, f.target, f.head, f.head, previous, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
 		t.Fatalf("invalid recorded placement error=%v, want ErrUpdateIneligible", err)
 	}
 }
 
-// 更新候補の tracked path 列挙に失敗した場合は、空の tree として衝突検査を続けない。
-// tree object を読む他の検査の巻き添えの失敗で成功しないよう、列挙だけを実行する helper を直接呼ぶ。
+// 要求OIDのtree列挙に失敗した場合は、空のtreeとして配置計画や衝突検査を続けない。
 // testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
-func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
+func TestListTreeLeavesPropagatesTreeError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, _ := cowFixture(t)
+	treeOID := cowGit(t, string(repo.MainPath), "rev-parse", oid+"^{tree}")
+	objectPath := filepath.Join(string(repo.CommonDir), "objects", treeOID[:2], treeOID[2:])
+	if err := os.Rename(objectPath, objectPath+".mutation-test"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Rename(objectPath+".mutation-test", objectPath) })
+	if _, err := p.ListTreeLeaves(ctx, repo, oid); err == nil {
+		t.Fatal("tree enumeration error was ignored")
+	}
+}
+
+// 衝突候補の配下の untracked/ignored path 列挙に失敗した場合は、不完全な集合で適格と判定しない。
+// index を読む他の検査の巻き添えの失敗で成功しないよう、列挙だけを実行する helper を直接呼ぶ。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestUntrackedPathsUnderPropagatesListingError(t *testing.T) {
 	ctx := context.Background()
 	p, repo, oid, target := cowFixture(t)
 	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
 		t.Fatal(err)
 	}
-	treeOID := cowGit(t, string(repo.MainPath), "rev-parse", oid+"^{tree}")
-	objectPath := filepath.Join(string(repo.CommonDir), "objects", treeOID[:2], treeOID[2:])
-	backupPath := objectPath + ".mutation-test"
-	var moved atomic.Bool
-	t.Cleanup(func() {
-		if moved.Load() {
-			_ = os.Rename(backupPath, objectPath)
-		}
-	})
-	p.Git.SetBeforeRunAtHook(func(args []string) {
-		if strings.Join(args, "\x00") != strings.Join([]string{"ls-tree", "-r", "--name-only", "-z", oid}, "\x00") {
-			return
-		}
-		if err := os.Rename(objectPath, backupPath); err != nil {
-			t.Error(err)
-			return
-		}
-		moved.Store(true)
-	})
-	if _, _, err := p.updateCandidatePaths(ctx, target, oid); err == nil {
-		t.Fatal("tracked path enumeration error was ignored")
-	}
-	if !moved.Load() {
-		t.Fatal("tracked path enumeration was not exercised")
-	}
-}
-
-// 更新候補の untracked/ignored path 列挙に失敗した場合は、不完全な集合で適格と判定しない。
-// index を読む他の検査の巻き添えの失敗で成功しないよう、列挙だけを実行する helper を直接呼ぶ。
-// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
-func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
-	ctx := context.Background()
-	p, repo, oid, target := cowFixture(t)
-	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
 		t.Fatal(err)
 	}
 	indexPath := cowGit(t, target, "rev-parse", "--path-format=absolute", "--git-path", "index")
@@ -149,7 +178,7 @@ func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
 		}
 	})
 	p.Git.SetBeforeRunAtHook(func(args []string) {
-		if strings.Join(args, "\x00") != "ls-files\x00--others\x00-z" {
+		if len(args) < 2 || args[0] != "ls-files" || args[1] != "--others" {
 			return
 		}
 		if err := os.WriteFile(indexPath, []byte("invalid index"), 0o600); err != nil {
@@ -158,7 +187,7 @@ func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
 		}
 		corrupted.Store(true)
 	})
-	if _, _, err := p.updateCandidatePaths(ctx, target, oid); err == nil {
+	if _, err := p.untrackedPathsUnder(ctx, target, identity, []string{"file"}); err == nil {
 		t.Fatal("untracked path enumeration error was ignored")
 	}
 	if !corrupted.Load() {
@@ -166,7 +195,42 @@ func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
 	}
 }
 
-// 所有権と tracked clean を確かめる前に、worktree で並列の検査を走らせない。
+// 衝突候補の列挙は pathspec の上限ごとに分けて全件を調べ、glob 文字を含む path を magic として解釈しない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestUntrackedPathsUnderBatchesLiteralPathspecs(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(target, "glob-a"), "")
+	writeTestFile(t, filepath.Join(target, "last"), "")
+	probes := []string{"glob-*"}
+	for i := 0; len(probes) < untrackedProbeBatch+1; i++ {
+		probes = append(probes, "missing-"+strconv.Itoa(i))
+	}
+	probes = append(probes, "last")
+	calls := 0
+	p.Git.SetBeforeRunAtHook(func(args []string) {
+		if len(args) > 1 && args[0] == "ls-files" && args[1] == "--others" {
+			calls++
+		}
+	})
+	listed, err := p.untrackedPathsUnder(ctx, target, identity, probes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(listed) != 1 || listed[0] != "last" {
+		t.Fatalf("calls=%d listed=%v, want the last batch to find only last", calls, listed)
+	}
+}
+
+// 所有権と tracked clean を確かめる前に、worktree で衝突候補の列挙や index flag の読み取りを走らせない。
+// 衝突候補が実在する状態を作り、検査が走れば列挙の Git 起動が必ず観測されるようにする。
 // testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
 func TestValidateUpdateCandidateSkipsChecksWhenReadyValidationFails(t *testing.T) {
 	ctx := context.Background()
@@ -174,16 +238,35 @@ func TestValidateUpdateCandidateSkipsChecksWhenReadyValidationFails(t *testing.T
 	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
 		t.Fatal(err)
 	}
+	main := string(repo.MainPath)
+	writeTestFile(t, filepath.Join(main, "added"), "tracked\n")
+	cowGit(t, main, "add", "added")
+	cowGit(t, main, "commit", "-q", "-m", "add a path the standby already has")
+	newOID := cowGit(t, main, "rev-parse", "HEAD")
+	writeTestFile(t, filepath.Join(target, "added"), "local\n")
+	var listed atomic.Bool
+	p.Git.SetBeforeRunAtHook(func(args []string) {
+		if len(args) > 1 && args[0] == "ls-files" && args[1] == "--others" {
+			listed.Store(true)
+		}
+	})
+	if err := validateCollisionCandidate(ctx, p, repo, target, oid, newOID, nil, nil); !errors.Is(err, ErrUpdateIneligible) {
+		t.Fatalf("clean standby error=%v, want the collision to be found", err)
+	}
+	if !listed.Load() {
+		t.Fatal("the collision listing was not observed")
+	}
+	listed.Store(false)
 	if err := os.WriteFile(filepath.Join(target, "file"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var started atomic.Bool
 	p.Git.SetBeforeRunAtHook(func(args []string) {
-		if len(args) > 0 && (args[0] == "ls-tree" || args[0] == "ls-files") {
+		if len(args) > 0 && args[0] == "ls-files" {
 			started.Store(true)
 		}
 	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); !errors.Is(err, ErrTrackedChanges) {
+	if err := validateCollisionCandidate(ctx, p, repo, target, oid, newOID, nil, nil); !errors.Is(err, ErrTrackedChanges) {
 		t.Fatalf("dirty standby error=%v, want ErrTrackedChanges", err)
 	}
 	if started.Load() {
@@ -267,7 +350,7 @@ func TestRunChecksInOrderCancelsOnlyLaterChecks(t *testing.T) {
 }
 
 // 除外指定なしの ls-files --others は、untracked と ignored を別々に列挙した和集合と一致する。
-// ValidateUpdateCandidate は 1 回の走査で済ませるためにこの一致へ依存している。
+// 衝突候補の列挙（untrackedPathsUnder）は 1 回の起動で済ませるためにこの一致へ依存している。
 // testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
 func TestUntrackedListingMatchesUntrackedAndIgnoredUnion(t *testing.T) {
 	ctx := context.Background()
@@ -380,26 +463,44 @@ func TestValidateUpdateCandidateRejectsOnlyUnrestorableFlaggedIndexPaths(t *test
 	cowGit(t, main, "add", ".")
 	cowGit(t, main, "commit", "-m", "rewrite a tracked file")
 	newOID := cowGit(t, main, "rev-parse", "HEAD")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, newOID, nil, nil); err != nil {
 		t.Fatalf("an update without index flags must stay eligible: %v", err)
 	}
 	// 差分に乗らない path の flag は checkout を妨げないので、更新は適格なままである。
 	cowGit(t, target, "update-index", "--skip-worktree", "other")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, newOID, nil, nil); err != nil {
 		t.Fatalf("a flag outside the diff must stay eligible: %v", err)
 	}
 	cowGit(t, target, "update-index", "--skip-worktree", "file")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, newOID, nil, nil); err != nil {
 		t.Fatalf("a restorable flagged path must stay eligible: %v", err)
 	}
 	cowGit(t, main, "rm", "-q", "file")
 	cowGit(t, main, "commit", "-m", "delete the flagged file")
 	deletedOID := cowGit(t, main, "rev-parse", "HEAD")
-	err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, deletedOID, nil, nil)
+	err := validateCollisionCandidate(ctx, p, repo, target, baseOID, deletedOID, nil, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
 		t.Fatalf("flagged path deleted at the requested OID: error=%v, want ErrUpdateIneligible", err)
 	}
 	if !strings.Contains(err.Error(), "file") {
 		t.Fatalf("error=%v, want it to name the path that cannot be restored", err)
 	}
+}
+
+func (p *Preparer) gitPaths(ctx context.Context, target string, args ...string) (map[string]bool, error) {
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		return nil, err
+	}
+	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, entry := range strings.Split(result.Stdout, "\x00") {
+		if entry != "" {
+			out[filepath.Clean(entry)] = true
+		}
+	}
+	return out, nil
 }

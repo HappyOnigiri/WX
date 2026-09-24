@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 	"github.com/HappyOnigiri/WorktreeX/internal/pool"
@@ -65,17 +69,51 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 
 // standbyUpdatePlan は READY standby を要求内容へ更新するための、予約前に確定した入力一式である。
 // mismatch は予約後に再計算できないため、判定に使った値から組み立てて持ち回る。
+// timings は予約前の区間別の所要時間で、貸出が遅いときにどこで時間を使ったかを log から読めるようにする。
 type standbyUpdatePlan struct {
 	repositories []state.SlotRepository
 	targets      []state.SlotRepository
 	desired      []state.Placement
 	mismatch     readyMismatch
+	timings      []workspace.Phase
+}
+
+// timingLogArgs は予約前の区間を`precheck_<区間>_ms`の key で返す。
+func (p standbyUpdatePlan) timingLogArgs() []any {
+	args := make([]any, 0, 2*len(p.timings))
+	for _, phase := range p.timings {
+		args = append(args, "precheck_"+strings.ReplaceAll(phase.Name, "-", "_")+"_ms", phase.Total.Milliseconds())
+	}
+	return args
+}
+
+// standbyUpdateInputs は repository 1 件の、候補 slot に依存しない予約前の計算結果である。
+// 空の fingerprint と placed=false は未計算を表し、互換 fingerprint が合わない候補では後段を計算しない。
+type standbyUpdateInputs struct {
+	compatibility string
+	sparse        workspace.SparseCheckout
+	fingerprint   string
+	tree          workspace.TreeLeaves
+	planned       []state.Placement
+	placed        bool
+}
+
+// standbyUpdateInputCache は同じ貸出で候補を順に試す間だけ、候補に依存しない計算を使い回す。
+// fingerprint の入力には Generation が入るため、鍵に Generation を含めて同じ Generation の候補にだけ使う。
+type standbyUpdateInputCache map[standbyUpdateInputKey]*standbyUpdateInputs
+
+type standbyUpdateInputKey struct {
+	generation   int
+	repositoryID string
+	oid          string
 }
 
 // planStandbyUpdate は READY standby の更新可否を検証し、予約に渡す target と配置を組み立てる。
 // 実体には触れず、適合しない場合は workspace.ErrUpdateIneligible などを返す。
 // 呼び出し側は root を保持してから呼ぶこと。貸出予約と idle 更新で判定をずらさないために共有する。
-func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved) (standbyUpdatePlan, error) {
+// cache は候補を順に試す呼び出し側が渡し、nil なら使い回さない。
+// commentlint:allow-long -- 共有の理由と cache の渡し方を doc comment にまとめる
+func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, cache standbyUpdateInputCache) (standbyUpdatePlan, error) {
 	if !slot.PlacementHistoryComplete || slot.OwnerSessionID != "" || slot.Generation == 0 {
 		return standbyUpdatePlan{}, fmt.Errorf("%w: standby has no complete placement history", workspace.ErrUpdateIneligible)
 	}
@@ -97,37 +135,31 @@ func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, 
 	if err != nil {
 		return standbyUpdatePlan{}, err
 	}
-	preparer := m.newPreparer(m.Config(), slot)
+	if cache == nil {
+		cache = standbyUpdateInputCache{}
+	}
+	cfg := m.Config()
+	preparer := m.newPreparer(cfg, slot)
+	preparer.Phases = &workspace.PhaseTimings{}
 	plan := standbyUpdatePlan{repositories: repositories}
 	for _, requested := range resolved {
 		stored, ok := storedByID[string(requested.Repository.ID)]
 		if !ok {
 			return standbyUpdatePlan{}, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 		}
-		compatibility, err := workspace.UpdateCompatibilityFingerprintWithGit(ctx, m.git, slot.Generation, requested.Repository, m.Config())
-		if err != nil {
-			return standbyUpdatePlan{}, err
-		}
-		if compatibility != stored.CompatibilityFingerprint {
-			return standbyUpdatePlan{}, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
-		}
-		fingerprint, err := workspace.FingerprintWithGit(ctx, m.git, slot.Generation, requested.OID, requested.Repository, m.Config())
-		if err != nil {
-			return standbyUpdatePlan{}, err
-		}
-		planned, err := preparer.RepositoryPlacements(ctx, requested.Repository, requested.OID)
+		inputs, err := m.standbyUpdateInputs(ctx, cache, cfg, preparer, slot.Generation, requested, stored)
 		if err != nil {
 			return standbyUpdatePlan{}, err
 		}
 		oldRepositoryPlacements := placementsFor(previous, stored.RepositoryID)
-		if err := preparer.ValidateUpdateCandidate(ctx, requested.Repository, stored.WorktreePath, stored.BaseOID, requested.OID, oldRepositoryPlacements, planned); err != nil {
+		if err := preparer.ValidateUpdateCandidate(ctx, requested.Repository, stored.WorktreePath, stored.BaseOID, inputs.tree, oldRepositoryPlacements, inputs.planned); err != nil {
 			return standbyUpdatePlan{}, err
 		}
 		if plan.mismatch.reason == "" {
-			plan.mismatch = updateMismatch(stored, requested, fingerprint, oldRepositoryPlacements, planned)
+			plan.mismatch = updateMismatch(stored, requested, inputs.fingerprint, oldRepositoryPlacements, inputs.planned)
 		}
-		plan.desired = append(plan.desired, planned...)
-		plan.targets = append(plan.targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: fingerprint, CompatibilityFingerprint: compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
+		plan.desired = append(plan.desired, inputs.planned...)
+		plan.targets = append(plan.targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: inputs.fingerprint, CompatibilityFingerprint: inputs.compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
 	}
 	if w.Kind == "multi_repository" {
 		rootRules, err := m.rootRules(w)
@@ -149,16 +181,64 @@ func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, 
 		}
 		plan.desired = append(plan.desired, planned...)
 	}
+	plan.timings = preparer.Phases.Phases()
 	return plan, nil
 }
 
-func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs) (Lease, bool, error) {
+// standbyUpdateInputs は候補に依存しない計算を cache から返し、無ければ計算して積む。
+// 互換 fingerprint が合わない候補では、fingerprint と配置を計算せずに不適格を返す。
+func (m *Manager) standbyUpdateInputs(ctx context.Context, cache standbyUpdateInputCache, cfg config.Config, preparer *workspace.Preparer, generation int, requested pool.Resolved, stored state.SlotRepository) (*standbyUpdateInputs, error) {
+	key := standbyUpdateInputKey{generation: generation, repositoryID: string(requested.Repository.ID), oid: requested.OID}
+	inputs := cache[key]
+	if inputs == nil {
+		start := time.Now()
+		sparse, err := workspace.ReadSparseCheckout(ctx, m.git, requested.Repository)
+		if err != nil {
+			return nil, err
+		}
+		compatibility, err := workspace.UpdateCompatibilityFingerprintWithSparse(generation, requested.Repository, cfg, sparse)
+		if err != nil {
+			return nil, err
+		}
+		preparer.Phases.Observe("compatibility", start)
+		inputs = &standbyUpdateInputs{compatibility: compatibility, sparse: sparse}
+		cache[key] = inputs
+	}
+	if inputs.compatibility != stored.CompatibilityFingerprint {
+		return nil, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
+	}
+	if inputs.fingerprint == "" {
+		start := time.Now()
+		fingerprint, err := workspace.FingerprintWithSparse(generation, requested.OID, requested.Repository, cfg, inputs.sparse)
+		if err != nil {
+			return nil, err
+		}
+		preparer.Phases.Observe("fingerprint", start)
+		inputs.fingerprint = fingerprint
+	}
+	if !inputs.placed {
+		start := time.Now()
+		tree, err := preparer.ListTreeLeaves(ctx, requested.Repository, requested.OID)
+		if err != nil {
+			return nil, err
+		}
+		planned, err := preparer.RepositoryPlacementsInTree(ctx, requested.Repository, tree)
+		if err != nil {
+			return nil, err
+		}
+		preparer.Phases.Observe("placements", start)
+		inputs.tree, inputs.planned, inputs.placed = tree, planned, true
+	}
+	return inputs, nil
+}
+
+func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs, cache standbyUpdateInputCache) (Lease, bool, error) {
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
 		return Lease{}, false, err
 	}
 	defer releaseRoot()
-	plan, err := m.planStandbyUpdate(ctx, w, slot, resolved)
+	plan, err := m.planStandbyUpdate(ctx, w, slot, resolved, cache)
 	if err != nil {
 		return Lease{}, false, err
 	}
@@ -185,7 +265,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 		}
 		return Lease{}, false, err
 	}
-	m.log.Info("standby update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs()...)...)
+	m.log.Info("standby update reserved", slices.Concat([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs(), plan.timingLogArgs())...)
 	m.schedule(job)
 	return m.withReadiness(Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories), Route: RouteUpdate}, w), true, nil
 }
