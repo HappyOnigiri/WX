@@ -135,20 +135,10 @@ func TestUpdateLockedPropagatesCOWScopeError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	seenCheckout := false
-	postCheckoutSymbols := 0
+	// checkout より後の最初の diff は候補計算だけなので、checkout を見た時点で失敗を仕込む。
+	// 検証の回数は copy mode や CoW の有無で変わるため、それを数えて時点を決めない。
 	p.Git.SetBeforeRunAtHook(func(args []string) {
-		joined := strings.Join(args, "\x00")
-		if strings.Contains(joined, "\x00checkout\x00") {
-			seenCheckout = true
-			postCheckoutSymbols = 0
-			return
-		}
-		if !seenCheckout || joined != "symbolic-ref\x00-q\x00HEAD" {
-			return
-		}
-		postCheckoutSymbols++
-		if postCheckoutSymbols != 2 {
+		if !strings.Contains(strings.Join(args, "\x00"), "\x00checkout\x00") {
 			return
 		}
 		if err := os.WriteFile(marker, []byte("ready\n"), 0o600); err != nil {
