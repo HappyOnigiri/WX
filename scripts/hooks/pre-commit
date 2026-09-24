@@ -9,7 +9,6 @@ if [ "$branch" = "main" ]; then
 fi
 
 root=$(git rev-parse --show-toplevel)
-# No fixed time budget: hook-pre-commit runs the full `make ci`, so a hard
-# timeout here would fail ordinary commits as the test suite grows.
-# It caches the last success by working-tree hash; FORCE_CI=1 re-runs it.
+# hook-pre-commit はステージ済み差分に応じたfmtと静的検査だけを実行し、テストはGitHub Actionsに任せる。
+# FORCE_CI=1 を指定したときだけ `make ci` 全体を実行する。
 exec make -C "$root" hook-pre-commit

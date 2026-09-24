@@ -47,27 +47,6 @@ func execute(ctx context.Context, root string, plan selection, out io.Writer) er
 			return fmt.Errorf("hook check %s failed: %w", result.name, result.err)
 		}
 	}
-	if plan.compile {
-		result := runCommand(ctx, root, append([]string{goBinary(), "test", "-run", "^$"}, "./..."), "compile-all")
-		printResult(out, result)
-		if result.err != nil {
-			printTotal(out, "failed", started)
-			return fmt.Errorf("hook check %s failed: %w", result.name, result.err)
-		}
-	}
-	for _, test := range plan.sortedTests() {
-		args := []string{goBinary(), "test", "-short"}
-		if test.countOne {
-			args = append(args, "-count=1")
-		}
-		args = append(args, test.packages...)
-		result := runCommand(ctx, root, args, "package-test "+strings.Join(test.packages, ", "))
-		printResult(out, result)
-		if result.err != nil {
-			printTotal(out, "failed", started)
-			return fmt.Errorf("hook check %s failed: %w", result.name, result.err)
-		}
-	}
 	printTotal(out, "ok", started)
 	return nil
 }
@@ -106,13 +85,6 @@ func printResult(out io.Writer, result commandResult) {
 
 func printTotal(out io.Writer, status string, started time.Time) {
 	_, _ = fmt.Fprintf(out, "[total] %s (%s)\n", status, time.Since(started).Round(time.Millisecond))
-}
-
-func goBinary() string {
-	if value := os.Getenv("GO"); value != "" {
-		return value
-	}
-	return "go"
 }
 
 var repositoryGitEnvironment = map[string]bool{
