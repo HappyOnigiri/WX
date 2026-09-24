@@ -14,6 +14,25 @@ import (
 	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
+// preparationFailure は準備の失敗を slot の failure code と詳細ログの場所へ変換する。
+// prepare command の失敗は failure ID を code へ連結し、Git の失敗は stderr を書いた詳細ログを指す。
+func (m *Manager) preparationFailure(code string, err error) (string, string) {
+	var commandErr *workspace.PrepareCommandError
+	var gitErr *gitx.Error
+	switch {
+	case errors.As(err, &commandErr):
+		if commandErr.FailureID != "" {
+			code += ":" + commandErr.FailureID
+		}
+		return code, commandErr.DetailPath
+	case errors.As(err, &gitErr):
+		// Git は失敗の stderr を failure ID のログへ既に書いている。
+		// path を残さないと `git hook failed with exit N` だけが伝わり、hook が何を言って落ちたかへ辿れない。
+		return code, gitx.DetailPath(m.prepareDetailDir, gitErr.FailureID)
+	}
+	return code, ""
+}
+
 // prepareStagedSlot は staged preparation を実行し、この呼び出しで実際に配置した include/link を
 // repository ID ごとに返す。workspace root の分は空 key に入れる。
 // continueLease は失敗しても隔離しなかったことを示し、呼び出し元が貸出を続けるかの判断に使う。
@@ -33,20 +52,7 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 		if prepareErr == nil {
 			return
 		}
-		code, detail := "PREPARE_FAILED", ""
-		var commandErr *workspace.PrepareCommandError
-		var gitErr *gitx.Error
-		switch {
-		case errors.As(prepareErr, &commandErr):
-			detail = commandErr.DetailPath
-			if commandErr.FailureID != "" {
-				code += ":" + commandErr.FailureID
-			}
-		case errors.As(prepareErr, &gitErr):
-			// Git は失敗の stderr を failure ID のログへ既に書いている。
-			// path を残さないと `git hook failed with exit N` だけが伝わり、hook が何を言って落ちたかへ辿れない。
-			detail = gitx.DetailPath(m.prepareDetailDir, gitErr.FailureID)
-		}
+		code, detail := m.preparationFailure("PREPARE_FAILED", prepareErr)
 		if errors.Is(prepareErr, state.ErrOwnership) {
 			code = "WORKTREE_OWNERSHIP_UNCERTAIN"
 		} else if recordErr := m.store.RecordEarlyReadyPrepareFailure(context.Background(), slot.ID, code, detail, timer.failedPhase()); recordErr == nil {

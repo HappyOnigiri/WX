@@ -346,12 +346,13 @@ func (m *Manager) standbyReadyUsable(ctx context.Context, slot state.Slot, w dis
 	return m.standbyStoredStateValid(ctx, slot, w)
 }
 
-func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateErr error) {
+func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) error {
 	slot, err := m.store.Slot(ctx, job.SlotID)
 	if err != nil {
 		return err
 	}
 	// 完了済みの更新を job の再配送で二度走らせない。貸出付きは LEASED、idle 更新は READY へ戻っている。
+	// Early Ready 後に失敗して貸出を続けた更新も、update_completed_at を記録して LEASED へ進めている。
 	if slot.UpdateCompletedAt != "" && (slot.State == "LEASED" || (job.SessionID == "" && slot.State == "READY")) {
 		return nil
 	}
@@ -367,6 +368,19 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 		return err
 	}
 	defer releaseRoot()
+	w, continueLease, err := m.updateStandbySlot(ctx, job, slot)
+	if err == nil || !continueLease {
+		return err
+	}
+	m.log.Error("standby update failed after early readiness", "job_id", job.ID, "session_id", job.SessionID, "slot_id", slot.ID, "continue_lease", continueLease, "error", err)
+	return m.leaseAfterStandbyUpdateFailure(ctx, w, slot.ID)
+}
+
+// updateStandbySlot は全repositoryの前半（checkoutと配置）を終えてから、貸出付きの更新に限りEarly Readyを出し、後半を実行する。
+// continueLease は Early Ready の後の失敗を隔離せずに記録したことを示し、呼び出し側は貸出を続けて LEASED へ進める。
+// エージェントが起動した後に隔離すると、返却が DRAINING を通らず作業が snapshot へ届かないためである。
+// commentlint:allow-long -- Early Ready を出す境界と、その後の失敗を隔離しない理由を doc comment にまとめる
+func (m *Manager) updateStandbySlot(ctx context.Context, job state.Job, slot state.Slot) (w discovery.Workspace, continueLease bool, updateErr error) {
 	updateConfig := m.Config()
 	if slot.UpdateCopyMode != "" {
 		updateConfig.RepositoryDefaults.Storage.CopyMode = slot.UpdateCopyMode
@@ -374,7 +388,7 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	preparer := m.newPreparer(updateConfig, slot)
 	ctx, releaseSlot, err := preparer.LockSlot(ctx)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	defer releaseSlot()
 	// 更新も cold start と同じ器で測る。`wx bench` から更新の所要時間が見えるようにし、
@@ -382,8 +396,9 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	timer := m.newPrepareTimer(slot, preparer)
 	defer func() { timer.finish(updateErr) }()
 	if err := m.store.BeginStandbyUpdate(ctx, slot.ID); err != nil {
-		return err
+		return w, false, err
 	}
+	early := false
 	defer func() {
 		if updateErr == nil {
 			return
@@ -391,78 +406,131 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 		code := "UPDATE_FAILED"
 		if errors.Is(updateErr, state.ErrOwnership) {
 			code = "WORKTREE_OWNERSHIP_UNCERTAIN"
+		} else if early {
+			// owner session が既に終わっていれば記録は拒否され、cold start の Early 後の失敗と同じく隔離へ倒れる。
+			failureCode, detail := m.preparationFailure(code, updateErr)
+			if recordErr := m.store.RecordEarlyReadyPrepareFailure(context.Background(), slot.ID, failureCode, detail, timer.failedPhase()); recordErr == nil {
+				continueLease = true
+				return
+			}
 		}
 		_ = m.store.SetSlotState(context.Background(), slot.ID, []string{"PREPARING"}, "QUARANTINED", code)
 	}()
-	w, err := m.store.Workspace(ctx, job.WorkspaceID)
+	w, err = m.store.Workspace(ctx, job.WorkspaceID)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	repositories, err := m.store.SlotRepositories(ctx, slot.ID)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	previous, err := m.store.Placements(ctx, slot.ID)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	desired, err := m.store.UpdatePlacements(ctx, slot.ID)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	byID := make(map[string]discovery.Repository, len(w.Repositories))
 	actualDesired := append([]state.Placement(nil), placementsFor(desired, "")...)
 	for _, repository := range w.Repositories {
 		byID[string(repository.ID)] = repository
 	}
+	targets := make([]discovery.Repository, len(repositories))
+	stages := make([]workspace.StandbyUpdateStage, len(repositories))
 	for index, stored := range repositories {
 		repository, ok := byID[stored.RepositoryID]
 		if !ok || stored.UpdateBaseOID == "" {
-			return errors.New("standby update metadata no longer matches the workspace")
+			return w, false, errors.New("standby update metadata no longer matches the workspace")
 		}
 		// 更新の区間名も repository ごとに繰り返すため、実行中の表示が何件目かを読めるようにする。
+		// 前半と後半の2周で同じ repository に同じ番号を付ける。
 		preparer.Phases.Scope(workspace.RepositoryScope(repository, index+1, len(repositories)))
 		if err := m.store.MarkRepositoryUpdateRunning(ctx, slot.ID, stored.RepositoryID); err != nil {
-			return err
+			return w, false, err
 		}
-		materialized, err := preparer.UpdateLocked(ctx, repository, stored.WorktreePath, stored.BaseOID, stored.UpdateBaseOID, slot.ID, placementsFor(previous, stored.RepositoryID), placementsFor(desired, stored.RepositoryID))
+		stage, err := preparer.UpdateCheckoutLocked(ctx, repository, stored.WorktreePath, stored.BaseOID, stored.UpdateBaseOID, slot.ID, placementsFor(previous, stored.RepositoryID), placementsFor(desired, stored.RepositoryID))
 		if err != nil {
-			return err
+			return w, false, err
 		}
-		actualDesired = append(actualDesired, materialized...)
+		targets[index], stages[index] = repository, stage
+		actualDesired = append(actualDesired, stage.Placements()...)
 	}
 	if w.Kind == "multi_repository" {
 		destination, err := domain.OpenRootAt(preparer.OwnedRoot, slot.RelPath)
 		if err != nil {
-			return err
+			return w, false, err
 		}
 		syncErr := workspace.ValidateAndSyncRootPlacements(destination, placementsFor(previous, ""), placementsFor(desired, ""))
 		_ = destination.Close()
 		if syncErr != nil {
-			return syncErr
+			return w, false, syncErr
 		}
 	}
+	// 配置は前半で全て置き終えているため、Early Ready の前に実際の配置を staging へ確定させる。
+	// Early Ready の後に失敗して貸出を続ける場合も、この staging を配置履歴として公開する。
 	if err := m.store.ReplaceUpdatePlacements(ctx, slot.ID, actualDesired); err != nil {
-		return err
+		return w, false, err
+	}
+	if job.SessionID != "" {
+		for index, stored := range repositories {
+			identity, err := preparer.WorktreeIdentity(stored.WorktreePath)
+			if err != nil {
+				return w, false, err
+			}
+			if err := m.store.RecordSlotRepositoryIdentity(ctx, slot.ID, string(targets[index].ID), identity); err != nil {
+				return w, false, err
+			}
+		}
+		if err := m.store.MarkStandbyUpdateEarlyReady(ctx, slot.ID); err != nil {
+			return w, false, err
+		}
+		early = true
+		timer.markEarly()
+	}
+	for index, stored := range repositories {
+		preparer.Phases.Scope(workspace.RepositoryScope(targets[index], index+1, len(repositories)))
+		if _, err := preparer.UpdateFinishLocked(ctx, targets[index], stored.WorktreePath, stored.BaseOID, stored.UpdateBaseOID, slot.ID, placementsFor(previous, stored.RepositoryID), stages[index]); err != nil {
+			return w, false, err
+		}
 	}
 	if job.SessionID == "" {
 		if err := m.store.FinishIdleStandbyUpdate(ctx, slot.ID); err != nil {
-			return err
+			return w, false, err
 		}
 		m.log.Info("standby idle update completed", "workspace_id", w.ID, "slot_id", slot.ID)
 		m.scheduleSlotUsageMeasurement(slot.ID)
-		return nil
+		return w, false, nil
 	}
 	releaseJob, released, replenishJob, replenished, err := m.store.FinishStandbyUpdate(ctx, slot.ID)
 	if err != nil {
-		return err
+		return w, false, err
 	}
 	m.log.Info("standby update completed", "workspace_id", w.ID, "slot_id", slot.ID)
-	m.scheduleSlotUsageMeasurement(slot.ID)
+	m.finishStandbyUpdateLease(ctx, w, slot.ID, releaseJob, released, replenishJob, replenished)
+	return w, false, nil
+}
+
+// leaseAfterStandbyUpdateFailure は Early Ready の後に後半が失敗した更新を LEASED まで進める。
+// cold start の leaseAfterPrepareFailure に相当し、失敗自体は failure_code に残って最初のプロンプトで伝わる。
+// 返却が先着して owner session が RELEASING の場合は、同じ遷移が DRAINING と SNAPSHOT を選ぶ。
+func (m *Manager) leaseAfterStandbyUpdateFailure(ctx context.Context, w discovery.Workspace, slotID string) error {
+	releaseJob, released, replenishJob, replenished, err := m.store.FinishStandbyUpdateAfterFailure(ctx, slotID)
+	if err != nil {
+		m.log.Error("finish standby update after failure failed", "slot_id", slotID, "error", err)
+		_ = m.store.SetSlotState(context.Background(), slotID, []string{"PREPARING"}, "QUARANTINED", "UPDATE_AMBIGUOUS")
+		return err
+	}
+	m.finishStandbyUpdateLease(ctx, w, slotID, releaseJob, released, replenishJob, replenished)
+	return nil
+}
+
+func (m *Manager) finishStandbyUpdateLease(ctx context.Context, w discovery.Workspace, slotID string, releaseJob state.Job, released bool, replenishJob state.Job, replenished bool) {
+	m.scheduleSlotUsageMeasurement(slotID)
 	if released {
 		m.schedule(releaseJob)
-		return nil
+		return
 	}
 	m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
-	return nil
 }
