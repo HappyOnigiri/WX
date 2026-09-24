@@ -40,6 +40,15 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 // UpdateCompatibilityFingerprintWithGit は Git の実効設定を使って更新互換 fingerprint を作る。
 // daemon の Git runner を渡すことで、include と worktree-local config を Git 自身に解決させる。
 func UpdateCompatibilityFingerprintWithGit(ctx context.Context, git *gitx.Runner, generation int, repo discovery.Repository, c config.Config) (string, error) {
+	sparse, err := ReadSparseCheckout(ctx, git, repo)
+	if err != nil {
+		return "", err
+	}
+	return UpdateCompatibilityFingerprintWithSparse(generation, repo, c, sparse)
+}
+
+// UpdateCompatibilityFingerprintWithSparse は読み取り済みの sparse 設定で更新互換 fingerprint を作る。
+func UpdateCompatibilityFingerprintWithSparse(generation int, repo discovery.Repository, c config.Config, sparse SparseCheckout) (string, error) {
 	workspaceRoot, err := repositoryWorkspaceRoot(repo)
 	if err != nil {
 		return "", err
@@ -55,9 +64,7 @@ func UpdateCompatibilityFingerprintWithGit(ctx context.Context, git *gitx.Runner
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
-	if err := writeSparseCheckoutFingerprint(ctx, git, h, repo); err != nil {
-		return "", err
-	}
+	sparse.write(h)
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -85,11 +92,24 @@ func FingerprintWithGit(ctx context.Context, git *gitx.Runner, generation int, o
 	return fingerprintWithSchemaAndGit(ctx, git, fingerprintSchemaVersion, generation, oid, repo, c)
 }
 
+// FingerprintWithSparse は読み取り済みの sparse 設定で prepared worktree の fingerprint を作る。
+func FingerprintWithSparse(generation int, oid string, repo discovery.Repository, c config.Config, sparse SparseCheckout) (string, error) {
+	return fingerprintWithSchemaAndSparse(fingerprintSchemaVersion, generation, oid, repo, c, sparse)
+}
+
 func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return fingerprintWithSchemaAndGit(context.Background(), &gitx.Runner{}, schema, generation, oid, repo, c)
 }
 
 func fingerprintWithSchemaAndGit(ctx context.Context, git *gitx.Runner, schema, generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
+	sparse, err := ReadSparseCheckout(ctx, git, repo)
+	if err != nil {
+		return "", err
+	}
+	return fingerprintWithSchemaAndSparse(schema, generation, oid, repo, c, sparse)
+}
+
+func fingerprintWithSchemaAndSparse(schema, generation int, oid string, repo discovery.Repository, c config.Config, sparse SparseCheckout) (string, error) {
 	mainPath := string(repo.MainPath)
 	workspaceRoot, rootErr := repositoryWorkspaceRoot(repo)
 	if rootErr != nil {
@@ -185,30 +205,39 @@ func fingerprintWithSchemaAndGit(ctx context.Context, git *gitx.Runner, schema, 
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
-	if err := writeSparseCheckoutFingerprint(ctx, git, h, repo); err != nil {
-		return "", err
-	}
+	sparse.write(h)
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// writeSparseCheckoutFingerprint は source worktree の sparse 選択を fingerprint へ含める。
-// sparse の実効値は Git の worktree-local config と worktree ごとの info/sparse-checkout にあり、
-// OID や wx の設定だけでは path set の変更を検出できない。disabled のときは残った古い pattern を無視する。
-func writeSparseCheckoutFingerprint(ctx context.Context, git *gitx.Runner, h hash.Hash, repo discovery.Repository) error {
+// SparseCheckout は source worktree の sparse 選択の読み取り結果で、fingerprint へ含める。
+// 実効値は Git の worktree-local config と info/sparse-checkout にあり、OID や wx の設定だけでは path set の変更を検出できない。
+// 更新互換 fingerprint と fingerprint を続けて作る呼び出し側は、1回読んだ値を両方へ渡す。
+type SparseCheckout struct {
+	enabled  bool
+	cone     bool
+	patterns []byte
+}
+
+// ReadSparseCheckout は Git が source worktree に適用する sparse の設定と pattern を読む。
+func ReadSparseCheckout(ctx context.Context, git *gitx.Runner, repo discovery.Repository) (SparseCheckout, error) {
 	enabled, cone, patterns, err := sparseCheckoutSettings(ctx, git, repo)
 	if err != nil {
-		return err
+		return SparseCheckout{}, err
 	}
-	_, _ = fmt.Fprintf(h, "sparse-checkout-enabled=%t\n", enabled)
-	if !enabled {
-		return nil
+	return SparseCheckout{enabled: enabled, cone: cone, patterns: patterns}, nil
+}
+
+// write は disabled のとき、残った古い pattern を無視する。
+func (s SparseCheckout) write(h hash.Hash) {
+	_, _ = fmt.Fprintf(h, "sparse-checkout-enabled=%t\n", s.enabled)
+	if !s.enabled {
+		return
 	}
-	_, _ = fmt.Fprintf(h, "sparse-checkout-cone=%t\n", cone)
-	_, _ = fmt.Fprintf(h, "sparse-checkout-patterns=%x\n", sha256.Sum256(patterns))
-	return nil
+	_, _ = fmt.Fprintf(h, "sparse-checkout-cone=%t\n", s.cone)
+	_, _ = fmt.Fprintf(h, "sparse-checkout-patterns=%x\n", sha256.Sum256(s.patterns))
 }
 
 // sparseCheckoutSettings は Git が source worktree に適用する sparse の設定と pattern を読む。
