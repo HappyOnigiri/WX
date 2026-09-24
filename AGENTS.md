@@ -10,7 +10,7 @@ CIのランナーは全てlinuxなので、platform依存の実装を触った�
 - エージェントはwxが作ったworktreeで作業し、ソースリポジトリのHEAD・index・追跡ファイルを変更しない。
 - 正常に終了したslotについて、スナップショットしていない作業を自動で破棄しない。
   ユーザーが明示的に実行するコマンドでの削除経路は用意してよい。
-- Early Readyでエージェントが起動した後に準備が失敗した貸出は隔離せず、貸出を維持したまま`LEASED`へ進める。
+- Early Readyでエージェントが起動した後に準備・更新が失敗した貸出は隔離せず、貸出を維持したまま`LEASED`へ進める。
   隔離すると返却が`DRAINING`を通らず、エージェントの作業がsnapshotへ届かないためである。
   失敗はslotの失敗記録として残し、エージェントへは最初の`user-prompt-submit`で1回だけ伝える。
 - Gitは必ず`internal/gitx`経由で起動する。
@@ -23,7 +23,8 @@ CIのランナーは全てlinuxなので、platform依存の実装を触った�
 - `storage.worktree_root`を変更しても、既存slotは登録済みのroot世代で寿命を全うする（移動・STALE化しない）。
 - 貸出中のslotのworktreeを書き換えない。
   READYのHot Standbyは`worktree.reuse_standby`が有効で更新適合条件を満たす場合に限り、貸出予約後・起動前に要求OIDへ更新してよい。
-  更新の書込み開始後に失敗・中断したslotは隔離し、自動再実行や再利用を行わない。
+  貸出付きの更新は全repositoryのcheckoutと配置を終えた時点でEarly Readyを出し、残りの検証とCoWはFull Readyまでに終える。
+  更新の書込み開始後、Early Readyより前に失敗したslotと、中断したslotは隔離し、自動再実行や再利用を行わない。
   起動側は隔離したslotに触れないまま新しい貸出を取り直してよく、その作り直しは1回に限る。
   更新適合条件を満たさないREADY standbyはSTALEとして回収し、補充で作り直す（`--branch`指定の貸出では回収しない）。
 

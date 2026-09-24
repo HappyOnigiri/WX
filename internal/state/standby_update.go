@@ -251,8 +251,35 @@ func (s *Store) BeginStandbyUpdate(ctx context.Context, slotID string) error {
 	return nil
 }
 
+// MarkStandbyUpdateEarlyReady は貸出付きの更新で、全repositoryのcheckoutと配置を終えた時点を一度だけ記録する。
+// owner の無い idle 更新は起動を待つ相手がいないので、Early Ready を出さない。
+func (s *Store) MarkStandbyUpdateEarlyReady(ctx context.Context, slotID string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE slots SET early_ready_at=?,updated_at=? WHERE id=? AND state='PREPARING' AND update_started_at IS NOT NULL AND early_ready_at IS NULL AND owner_session_id IS NOT NULL`, now(), now(), slotID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("slot %s standby update early readiness compare-and-swap failed", slotID)
+	}
+	return nil
+}
+
 // FinishStandbyUpdate は全repositoryの実体検証後に、更新先と配置履歴をまとめて公開する。
 func (s *Store) FinishStandbyUpdate(ctx context.Context, slotID string) (Job, bool, Job, bool, error) {
+	return s.finishStandbyUpdate(ctx, slotID, false)
+}
+
+// FinishStandbyUpdateAfterFailure は Early Ready の後に後半が失敗した更新を、貸出を保ったまま LEASED へ進める。
+// checkout と配置は済んでいるので、repository は更新先の値へ昇格し、配置履歴も実際に置いた staging を公開する。
+// 後半の検証を終えていないため placement_history_complete を 0 にし、この slot を再利用・更新の候補から外す。
+// commentlint:allow-long -- 昇格してよい理由と候補から外す理由を並べて残す
+func (s *Store) FinishStandbyUpdateAfterFailure(ctx context.Context, slotID string) (Job, bool, Job, bool, error) {
+	return s.finishStandbyUpdate(ctx, slotID, true)
+}
+
+func (s *Store) finishStandbyUpdate(ctx context.Context, slotID string, failed bool) (Job, bool, Job, bool, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -274,7 +301,11 @@ func (s *Store) FinishStandbyUpdate(ctx context.Context, slotID string) (Job, bo
 	} else if sessionState != "STARTING" && sessionState != "ACTIVE" {
 		return Job{}, false, Job{}, false, fmt.Errorf("updated slot owner session is in unexpected state %s", sessionState)
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state=?,ready_at=?,updated_at=?,update_completed_at=?,update_copy_mode=NULL WHERE id=? AND state='PREPARING' AND update_started_at IS NOT NULL AND owner_session_id IS NOT NULL`, targetState, t, t, t, slotID)
+	query := `UPDATE slots SET state=?,ready_at=?,updated_at=?,update_completed_at=?,update_copy_mode=NULL WHERE id=? AND state='PREPARING' AND update_started_at IS NOT NULL AND owner_session_id IS NOT NULL`
+	if failed {
+		query = `UPDATE slots SET state=?,ready_at=?,updated_at=?,update_completed_at=?,update_copy_mode=NULL,placement_history_complete=0 WHERE id=? AND state='PREPARING' AND update_started_at IS NOT NULL AND early_ready_at IS NOT NULL AND owner_session_id IS NOT NULL`
+	}
+	res, err := tx.ExecContext(ctx, query, targetState, t, t, t, slotID)
 	if err != nil {
 		return Job{}, false, Job{}, false, err
 	}

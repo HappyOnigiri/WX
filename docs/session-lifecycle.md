@@ -70,7 +70,9 @@
    daemon log には貸出時の実効 mode と、client が呼んだ`early` / `full`待機を記録する。
    fallback理由は client が hook の可否を判定するため client 側だけで表示し、旧 daemon との RPC 互換性を保つため要求パラメータへ追加しない。
 
-   UPDATE中はEarly Readyを公開せず、通常起動も`wx shell/run/new`も全repository・workspace rootの更新完了を待つ。
+   貸出付きのUPDATEは、全repositoryのcheckoutと配置、workspace rootの配置の同期を終えた時点でEarly Readyを公開する。
+   checkout直後に出すと、変更された`CLAUDE.local.md`などのincludeが未配置のまま起動するためである。
+   prepare commandの再実行・CoW・最終の検証はその後に走り、エージェントは最初の`user-prompt-submit`でFull Readyを待つので作業と重ならない。
    resume・restoreは全準備を待ち、UPDATE経路を使わない。
    起動前の待機中もheartbeat・終了要求・失敗時のReleaseを維持する。
 
@@ -151,7 +153,7 @@
    確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。
    やり直しは繰り返さず、新しいworktreeでの失敗はそのまま返す。
 
-   再開でない起動が、待機枠の更新に固有の失敗で終わったときは、daemonが`cold_start=retryable`を載せてClient側の作り直しを許す。
+   再開でない起動が、Early Readyより前の待機枠の更新に固有の失敗で終わったときは、daemonが`cold_start=retryable`を載せてClient側の作り直しを許す。
    まだ誰にも渡していないworktreeなので失われるものがなく、確認を出さずにCold Startで1度だけ起動し直す。
    隔離したslotには触れず、新しい貸出を取り直すだけである。失敗の可視化は`wx doctor`の隔離検査が担う。
 
