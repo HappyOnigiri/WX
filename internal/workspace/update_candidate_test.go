@@ -93,7 +93,7 @@ func TestValidateUpdateCandidateRejectsInvalidRecordedPlacement(t *testing.T) {
 }
 
 // 更新候補の tracked path 列挙に失敗した場合は、空の tree として衝突検査を続けない。
-// 検査は並列に走るため、退避した object は戻さずに終える。他の検査が巻き添えで失敗しても、エラーが返ることは変わらない。
+// tree object を読む他の検査の巻き添えの失敗で成功しないよう、列挙だけを実行する helper を直接呼ぶ。
 // testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
 func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
 	ctx := context.Background()
@@ -120,7 +120,7 @@ func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
 		}
 		moved.Store(true)
 	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
+	if _, _, err := p.updateCandidatePaths(ctx, target, oid); err == nil {
 		t.Fatal("tracked path enumeration error was ignored")
 	}
 	if !moved.Load() {
@@ -129,6 +129,7 @@ func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
 }
 
 // 更新候補の untracked/ignored path 列挙に失敗した場合は、不完全な集合で適格と判定しない。
+// index を読む他の検査の巻き添えの失敗で成功しないよう、列挙だけを実行する helper を直接呼ぶ。
 // testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
 func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
 	ctx := context.Background()
@@ -157,7 +158,7 @@ func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
 		}
 		corrupted.Store(true)
 	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
+	if _, _, err := p.updateCandidatePaths(ctx, target, oid); err == nil {
 		t.Fatal("untracked path enumeration error was ignored")
 	}
 	if !corrupted.Load() {

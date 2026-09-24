@@ -27,12 +27,7 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 			return p.rejectUnrestorableWorktreeState(ctx, repo, target, oldOID, newOID, previous)
 		},
 		func(ctx context.Context) (err error) {
-			tracked, err = p.gitPaths(ctx, target, "ls-tree", "-r", "--name-only", "-z", newOID)
-			return err
-		},
-		// 除外指定を付けない列挙は、untrackedとignoredを別々に列挙した和集合と同じ集合を1回の走査で返す。
-		func(ctx context.Context) (err error) {
-			untracked, err = p.gitPaths(ctx, target, "ls-files", "--others", "-z")
+			tracked, untracked, err = p.updateCandidatePaths(ctx, target, newOID)
 			return err
 		},
 	}
@@ -55,6 +50,26 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 		}
 	}
 	return nil
+}
+
+// updateCandidatePaths は要求OIDのtracked pathと、worktreeのuntrackedとignoredのpathを並列に列挙する。
+// どちらかの列挙が失敗した場合は、不完全な集合で衝突検査を続けないようにmapを返さない。
+func (p *Preparer) updateCandidatePaths(ctx context.Context, target, newOID string) (tracked, untracked map[string]bool, err error) {
+	err = runChecksInOrder(ctx, []func(context.Context) error{
+		func(ctx context.Context) (err error) {
+			tracked, err = p.gitPaths(ctx, target, "ls-tree", "-r", "--name-only", "-z", newOID)
+			return err
+		},
+		// 除外指定を付けない列挙は、untrackedとignoredを別々に列挙した和集合と同じ集合を1回の走査で返す。
+		func(ctx context.Context) (err error) {
+			untracked, err = p.gitPaths(ctx, target, "ls-files", "--others", "-z")
+			return err
+		},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tracked, untracked, nil
 }
 
 // runChecksInOrder は全ての検査を並列に実行し、完了を待ってからslice順で最初のエラーを返す。
