@@ -23,7 +23,7 @@ on:
       job-timeout:
         description: Per-shard job timeout in minutes (30-360)
         required: false
-        default: "180"
+        default: "360"
       mutators:
         description: Mutator set (boundary or default)
         required: false

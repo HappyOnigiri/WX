@@ -9,6 +9,9 @@ if [[ -n ${HUNT_SHARD_FILES:-} ]]; then read -r -a matrix_shard_files <<<"$HUNT_
 matrix_exclude_files=()
 if [[ -n ${HUNT_EXCLUDE_FILES:-} ]]; then read -r -a matrix_exclude_files <<<"$HUNT_EXCLUDE_FILES"; fi
 measurement_timeout=$(((HUNT_JOB_TIMEOUT - 20) * 60))
+# 変異で暴走したtest processがrunnerのメモリを使い切るとjobごと停止し、結果が残らない。
+# 上限はworker数ぶん同時に達しても空きメモリに収まる値とし、超えた変異はテスト失敗として扱わせる。
+mutation_address_space_limit=$((6 * 1024 * 1024 * 1024))
 failures=0
 
 write_failure() {
@@ -105,7 +108,7 @@ for package in "${packages[@]}"; do
     --output "$result" --execution-result "$execution" --diagnostics-dir "$diagnostics" \
     --shard "$HUNT_ID" --profile "$profile" --run-id "$HUNT_RUN_ID" \
     --attempt "$HUNT_RUN_ATTEMPT" --sha "$GITHUB_SHA" -- \
-    .tools/bin/gremlins "${args[@]}"
+    prlimit --as="$mutation_address_space_limit" -- .tools/bin/gremlins "${args[@]}"
   runner_status=$?
   if [[ $runner_status -ne 0 ]]; then
     echo "::error title=Mutation measurement failed::$package ($(jq -r '.status' "$execution" 2>/dev/null || echo unknown))"

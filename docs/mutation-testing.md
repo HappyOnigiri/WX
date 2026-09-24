@@ -58,5 +58,7 @@ lightweight packageのgroup配分は、manifestの実測秒をfull runのartifac
 
 jobの上限は変異ごとの`timeout-coefficient`と分離し、測定期限には専用process groupをTERM、
 猶予後にKILLする。実行結果JSONは正常完了、除外不整合、Gremlins失敗、結果不正、測定期限超過を
-区別する。stdout/stderr、dry-run、割り当て、PID・PPID・PGIDを含むheartbeatは診断artifactへ
+区別する。変異で暴走したtestがrunnerのメモリを使い切るとjobごと停止して結果が残らないため、
+Gremlins配下のprocessはアドレス空間の上限付きで起動し、上限超過をテスト失敗として扱わせる。
+stdout/stderr、dry-run、割り当て、PID・PPID・PGIDを含むheartbeatは診断artifactへ
 分離する。予定した実行結果が1件でも欠ける場合は全件をsummaryへ出し、issueを書き込まない。
