@@ -495,7 +495,7 @@ func defaultsLegacy() Config {
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
 			RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour},
 		},
-		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
+		Pool:      Pool{WarmPerWorkspace: 2, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}, Progress: true}, Resume: Resume{AutoFresh: false},
