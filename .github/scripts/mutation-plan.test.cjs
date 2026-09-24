@@ -167,7 +167,9 @@ test('workflow wires planned shards, independent deadlines, and diagnostics', ()
   assert.match(workflow, /EXPECTED_SHARDS: \$\{\{ needs\.plan\.outputs\.shards \}\}/u);
   assert.match(workflow, /expectedShards,/u);
   assert.match(workflow, /max-parallel: 8/u);
-  assert.match(workflow, /job-timeout/u);
+  assert.doesNotMatch(workflow, /job-timeout/u);
+  assert.match(workflow, /timeout-minutes: 360\n/u);
+  assert.match(workflow, /HUNT_JOB_TIMEOUT: "360"/u);
   assert.match(workflow, /validate-exclusions/u);
   assert.match(workflow, /run-mutation-shard\.sh/u);
   assert.match(runner, /--exclude-files/u);

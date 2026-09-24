@@ -260,15 +260,19 @@ function validateExecution(value, artifactName) {
   return value;
 }
 
+// validateShardCompleteness は予定したshardとartifactを照合し、検証を通ったreportを返す。
+// 測定できなかったshardの欠落はgapsとして分け、allowGapsのときは整合性の問題だけで拒否する。
 function validateShardCompleteness(reports, expectedShards, source, options = {}) {
   const expected = normalizeExpectedShards(expectedShards);
   const problems = [];
+  const gaps = [];
+  const accepted = [];
   const expectedById = new Map();
   for (const shard of expected) {
     if (expectedById.has(shard.id)) fail(`expected shard ${shard.id} is duplicated`);
     expectedById.set(shard.id, shard);
   }
-  if (!Array.isArray(reports) || reports.length === 0) problems.push('no mutation artifacts were downloaded');
+  if (!Array.isArray(reports) || reports.length === 0) gaps.push('no mutation artifacts were downloaded');
   const observed = new Map();
   const suffix = `-${source.runId}-${source.attempt}`;
   for (const report of reports) {
@@ -307,7 +311,7 @@ function validateShardCompleteness(reports, expectedShards, source, options = {}
         problems.push(`${artifactName} execution contains unexpected profile ${execution.profile}`);
       }
       if (execution.status !== 'completed') {
-        problems.push(`${artifactName} measurement is unavailable: ${execution.status}${execution.detail ? ` (${execution.detail})` : ''}`);
+        gaps.push(`${artifactName} measurement is unavailable: ${execution.status}${execution.detail ? ` (${execution.detail})` : ''}`);
         continue;
       }
     }
@@ -343,25 +347,32 @@ function validateShardCompleteness(reports, expectedShards, source, options = {}
       continue;
     }
     profiles.add(manifest.profile);
+    accepted.push(report);
   }
   for (const shard of expected) {
     const profiles = observed.get(shard.id);
     if (!profiles) {
       const jobState = options.jobStates?.get?.(shard.id);
       const suffix = jobState ? ` (GitHub job: ${jobState})` : '';
-      problems.push(`expected mutation shard ${shard.id} is missing${suffix}`);
+      gaps.push(`expected mutation shard ${shard.id} is missing${suffix}`);
       continue;
     }
     if (shard.profiles) {
       const missing = shard.profiles.filter((profile) => !profiles.has(profile));
       const unexpected = [...profiles].filter((profile) => !shard.profiles.includes(profile));
-      if (missing.length > 0 || unexpected.length > 0) {
-        problems.push(`mutation shard ${shard.id} profiles are incomplete (missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'})`);
+      if (unexpected.length > 0) {
+        problems.push(`mutation shard ${shard.id} profiles are unexpected: ${unexpected.join(', ')}`);
       }
+      if (missing.length > 0) gaps.push(`mutation shard ${shard.id} profiles are missing: ${missing.join(', ')}`);
     }
   }
-  if (problems.length > 0) fail(`mutation measurements are incomplete:\n- ${problems.join('\n- ')}`);
-  return { expected, observed };
+  if (problems.length > 0) fail(`mutation artifacts are inconsistent:\n- ${[...problems, ...gaps].join('\n- ')}`);
+  if (gaps.length > 0 && !options.allowGaps) fail(incompleteMessage(gaps));
+  return { expected, observed, accepted, gaps };
+}
+
+function incompleteMessage(gaps) {
+  return `mutation measurements are incomplete:\n- ${gaps.join('\n- ')}`;
 }
 
 function aggregateManifests(manifests, source) {
@@ -575,14 +586,15 @@ async function run(options) {
     }
   }
   const reports = options.reports || collectManifests(options.reportDir || 'artifacts/mutation');
+  let completeness;
   let completenessError;
   try {
-    validateShardCompleteness(reports, options.expectedShards, source, { requireExecutions: !options.reports, jobStates });
+    completeness = validateShardCompleteness(reports, options.expectedShards, source, { requireExecutions: !options.reports, jobStates, allowGaps: true });
   } catch (error) {
     completenessError = error;
   }
   for (const report of reports) report.jobUrl = report.jobUrl || jobUrls.get(artifactId(report.artifactName)) || source.runUrl;
-  const validReports = reports.filter((report) => {
+  const validReports = completeness ? completeness.accepted : reports.filter((report) => {
     if (!report.manifest || (report.execution && report.execution.status !== 'completed')) return false;
     try {
       validateManifest(report.manifest, report.artifactName || 'artifact');
@@ -592,6 +604,7 @@ async function run(options) {
     }
   });
   const groups = aggregateManifests(validReports, source);
+  const gaps = completeness?.gaps || [];
   const fileIssues = options.fileIssues !== false;
   for (const report of validReports) {
     const value = report.manifest;
@@ -600,6 +613,7 @@ async function run(options) {
   }
   const results = [];
   const notFiled = [];
+  // 整合性を欠くartifactは起票元として信用できないため、issueを書き込む前に拒否する。
   if (completenessError) {
     if (options.core?.summary) {
       const survivorCount = groups.reduce((total, group) => total + group.items.length, 0);
@@ -609,6 +623,8 @@ async function run(options) {
     }
     throw completenessError;
   }
+  // 測定できなかったshardがあっても、検証を通ったshardの生存変異は起票する。
+  // 起票はcreate・comment・reopenだけで、欠けたshardの既存issueを閉じることはない。
   if (fileIssues) {
     if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
     const issues = groups.length > 0 ? await listIssues(github, owner, repo) : null;
@@ -625,8 +641,11 @@ async function run(options) {
   if (options.core?.summary) {
     const writer = options.core.summary.addHeading('Mutation hunt reports').addRaw(`${summary}\n`);
     if (!fileIssues) writer.addRaw(`Not filed (file-issues=false):\n${notFiled.map((title) => `- ${title}`).join('\n') || '- none'}\n`);
+    if (gaps.length > 0) writer.addRaw(`${incompleteMessage(gaps)}\n`);
     await writer.write();
   }
+  // 起票後も欠落をjobの失敗として残し、測定されなかった範囲を見落とさせない。
+  if (gaps.length > 0) fail(incompleteMessage(gaps));
   return { source, reports, results, groups, survivorCount, fileIssues, notFiled };
 }
 

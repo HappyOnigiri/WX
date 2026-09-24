@@ -29,9 +29,12 @@ mutationreportで判定する。`FILE=internal/config/duration.go`を追加す�
 
 planは、実行するshardのIDとそのshardが生成するmanifestの`profile`一覧を機械可読な
 出力としてreportへ渡す。reportはartifact名のshard ID・run ID・attemptとmanifestの
-`profile`を照合し、予定したshardの欠落・重複・予期しないshard・不正なmanifestを
-副作用のない検証で拒否する。この検証が終わるまで、mutation labelを含むGitHub Issues
-APIの書き込みは行わない。Gremlinsがexit 0で結果ファイルを作らない場合は、測定済みの
+`profile`を照合し、重複・予期しないshard・不正なmanifestを副作用のない検証で拒否する。
+この検証が終わるまで、mutation labelを含むGitHub Issues APIの書き込みは行わない。
+測定期限超過やrunner停止で欠けたshardは整合性の問題と分け、検証を通ったshardの生存変異を
+起票してから欠落を全件summaryへ出してreportを失敗させる。起票はcreate・comment・reopenだけで
+issueを閉じないため、欠けたshardの既存issueには影響しない。
+Gremlinsがexit 0で結果ファイルを作らない場合は、測定済みの
 mutation 0件として`mutationreport`の空結果モードでschema 2のmanifestを生成する。
 空manifestも通常と同じprofile、実行情報、command、exclusion、shard、repository境界の
 検証を通し、全shardが有効なmanifestを生成して初めて正常な空結果になる。非0終了、0バイト
@@ -61,4 +64,4 @@ jobの上限は変異ごとの`timeout-coefficient`と分離し、測定期限�
 区別する。変異で暴走したtestがrunnerのメモリを使い切るとjobごと停止して結果が残らないため、
 Gremlins配下のprocessはアドレス空間の上限付きで起動し、上限超過をテスト失敗として扱わせる。
 stdout/stderr、dry-run、割り当て、PID・PPID・PGIDを含むheartbeatは診断artifactへ
-分離する。予定した実行結果が1件でも欠ける場合は全件をsummaryへ出し、issueを書き込まない。
+分離する。

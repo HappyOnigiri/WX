@@ -602,6 +602,72 @@ test('reports every unavailable shard and performs no issue writes', async () =>
   assert.match(summaries.join('\n'), /mutation measurements are incomplete/u);
 });
 
+test('files survivors from completed shards before failing on unavailable shards', async () => {
+  const created = [];
+  const summaries = [];
+  const summary = { addHeading() { return this; }, addRaw(value) { summaries.push(value); return this; }, async write() {} };
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: {
+      getLabel: async () => ({ data: { name: 'mutation' } }),
+      create: async ({ title }) => { created.push(title); return { data: { number: created.length } }; },
+      addLabels: async () => ({ data: [{ name: 'mutation' }] }),
+      listForRepo: async () => ({ data: [] }),
+      listComments: async () => ({ data: [] }),
+    },
+  } };
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [
+      { artifactName: 'mutation-config-10-1', manifest: manifest(), execution: execution() },
+      { artifactName: 'mutation-state-10-1', execution: execution('measurement_timed_out', 'state', 'internal/state') },
+    ],
+    expectedShards: [
+      { id: 'config', profiles: ['internal/config'] },
+      { id: 'state', profiles: ['internal/state'] },
+      { id: 'agent', profiles: ['internal/agent'] },
+    ],
+    core: { summary },
+  }), (error) => {
+    assert.match(error.message, /mutation-state-10-1 measurement is unavailable: measurement_timed_out/u);
+    assert.match(error.message, /expected mutation shard agent is missing/u);
+    return true;
+  });
+  assert.deepEqual(created, [reporter.issueTitle({ path: 'internal/config/duration.go', function: 'parseDuration' })]);
+  assert.match(summaries.join('\n'), /1 issue\(s\) created/u);
+  assert.match(summaries.join('\n'), /mutation measurements are incomplete/u);
+});
+
+test('writes no issues when an artifact is inconsistent even if other shards are missing', async () => {
+  let writes = 0;
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: new Proxy({}, { get: () => async () => { writes += 1; } }),
+  } };
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [
+      { artifactName: 'mutation-config-10-1', manifest: manifest() },
+      { artifactName: 'mutation-other-10-1', manifest: manifest() },
+    ],
+    expectedShards: [
+      { id: 'config', profiles: ['internal/config'] },
+      { id: 'state', profiles: ['internal/state'] },
+    ],
+  }), /mutation artifacts are inconsistent[^]*not an expected mutation shard[^]*expected mutation shard state is missing/u);
+  assert.equal(writes, 0);
+});
+
 test('collects an execution result even when no manifest was produced', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-mutation-execution-'));
   try {
