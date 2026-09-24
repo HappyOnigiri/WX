@@ -10,7 +10,7 @@ const reporter = require('./report-mutants.cjs');
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const source = {
   owner: 'HappyOnigiri',
-  repo: 'WX',
+  repo: 'WorktreeX',
   runId: '10',
   attempt: '1',
   event: 'workflow_dispatch',

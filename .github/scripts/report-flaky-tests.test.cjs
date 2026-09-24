@@ -44,7 +44,7 @@ function manifest(runId, attempt, profile = 'coverage') {
 
 const source = {
   owner: 'HappyOnigiri',
-  repo: 'WX',
+  repo: 'WorktreeX',
   runId: '10',
   attempt: '1',
   event: 'push',
@@ -244,9 +244,9 @@ test('runs the report workflow with mocked Actions and issue APIs', async () => 
     },
   } };
   const reports = [{ artifactName: 'ci-tests-coverage-10-1', manifest: manifest('10', '1') }];
-  const first = await reporter.run({ github, owner: 'HappyOnigiri', repo: 'WX', sourceRunId: '10', sourceAttempt: '1', reports });
+  const first = await reporter.run({ github, owner: 'HappyOnigiri', repo: 'WorktreeX', sourceRunId: '10', sourceAttempt: '1', reports });
   assert.equal(first.results[0].action, 'created');
-  const second = await reporter.run({ github, owner: 'HappyOnigiri', repo: 'WX', sourceRunId: '11', sourceAttempt: '1', reports: [{ artifactName: 'ci-tests-coverage-11-1', manifest: manifest('11', '1') }] });
+  const second = await reporter.run({ github, owner: 'HappyOnigiri', repo: 'WorktreeX', sourceRunId: '11', sourceAttempt: '1', reports: [{ artifactName: 'ci-tests-coverage-11-1', manifest: manifest('11', '1') }] });
   assert.equal(second.results[0].action, 'commented');
 });
 
@@ -276,7 +276,7 @@ test('files the recoveries it has before failing on a missing artifact', async (
     },
   } };
   const reports = [{ artifactName: 'ci-tests-race-daemon-10-1', manifest: manifest('10', '1', 'race-daemon') }];
-  await assert.rejects(reporter.run({ github, owner: 'HappyOnigiri', repo: 'WX', sourceRunId: '10', sourceAttempt: '1', reports, core: { warning: (message) => warnings.push(message) } }), /missing report artifact for coverage/);
+  await assert.rejects(reporter.run({ github, owner: 'HappyOnigiri', repo: 'WorktreeX', sourceRunId: '10', sourceAttempt: '1', reports, core: { warning: (message) => warnings.push(message) } }), /missing report artifact for coverage/);
   assert.equal(issues.length, 1);
   assert.deepEqual(warnings, ['missing report artifact for coverage']);
 });
