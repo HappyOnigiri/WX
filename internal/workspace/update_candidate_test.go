@@ -201,7 +201,11 @@ func TestRunChecksInOrderReturnsFirstErrorByPosition(t *testing.T) {
 	var middleRan atomic.Bool
 	err := runChecksInOrder(context.Background(), []func(context.Context) error{
 		func(context.Context) error {
-			<-lastReturned
+			select {
+			case <-lastReturned:
+			case <-time.After(10 * time.Second):
+				return errors.New("checks did not run concurrently")
+			}
 			return first
 		},
 		func(context.Context) error {
