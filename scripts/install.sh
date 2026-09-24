@@ -45,7 +45,7 @@ main() {
 
   local install_dir="$HOME/.local/bin" destination="$HOME/.local/bin/wx"
   local asset=wx-darwin-arm64
-  local base_url="https://github.com/HappyOnigiri/WX/releases/download/$release_version"
+  local base_url="https://github.com/HappyOnigiri/WorktreeX/releases/download/$release_version"
   local checksum checksum_name actual registered_binary='' needs_install=true
   # 初回インストールだけ setup を対話で通す。表示言語を含む全ての質問は setup の TUI が持ち、
   # インストーラーは尋ねない。選択肢の見え方を 1 箇所に揃えるためである。

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
-	"github.com/HappyOnigiri/WX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/hookconfig"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
 )
 
 // findingFor は検査名が一致する最初の finding を返す。

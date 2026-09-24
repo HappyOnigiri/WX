@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // clearRecordingHandler は clear の入力境界を検査するため、受付 payload を記録して即時完了を返す。

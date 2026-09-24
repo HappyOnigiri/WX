@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner"
 )
 
 // fixedNow は相対時刻の表示を固定するための基準時刻である。
@@ -103,6 +103,13 @@ func TestPickerNavigationUsesTwoLineRows(t *testing.T) {
 	m = result.(pickerModel)
 	if got := m.visibleRows(); got != 1 {
 		t.Fatalf("narrow visible rows=%d, want 1", got)
+	}
+}
+
+func TestPickerVisibleRowsAccountsForStatusLine(t *testing.T) {
+	m := pickerModel{height: 14, statusID: "tui.picker.no_match"}
+	if got := m.visibleRows(); got != 3 {
+		t.Fatalf("visible rows with status=%d, want 3", got)
 	}
 }
 

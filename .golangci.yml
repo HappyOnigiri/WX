@@ -34,43 +34,43 @@ linters:
           files:
             - "**/internal/domain/**"
           deny:
-            - pkg: github.com/HappyOnigiri/WX/internal
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal
               desc: domain must not depend on adapters or orchestration
         sessions-boundary:
           files:
             - "**/internal/sessions/**"
           deny:
-            - pkg: github.com/HappyOnigiri/WX/internal/config
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/config
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/cli
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/cli
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/daemon
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/daemon
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/rpc
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/rpc
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/state
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/state
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/workspace
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/workspace
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/archive
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/archive
               desc: sessions must not depend on wx orchestration or authoritative state
-            - pkg: github.com/HappyOnigiri/WX/internal/pool
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/pool
               desc: sessions must not depend on wx orchestration or authoritative state
         state-boundary:
           files:
             - "**/internal/state/**"
           deny:
-            - pkg: github.com/HappyOnigiri/WX/internal/sessions
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/sessions
               desc: state must not depend on session history
-            - pkg: github.com/HappyOnigiri/WX/internal/cli
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/cli
               desc: state must not depend on CLI
-            - pkg: github.com/HappyOnigiri/WX/internal/daemon
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/daemon
               desc: state must not depend on daemon orchestration
-            - pkg: github.com/HappyOnigiri/WX/internal/rpc
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/rpc
               desc: state must not depend on RPC transport
-            - pkg: github.com/HappyOnigiri/WX/internal/gitx
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/gitx
               desc: state must not depend on the Git adapter
-            - pkg: github.com/HappyOnigiri/WX/internal/workspace
+            - pkg: github.com/HappyOnigiri/WorktreeX/internal/workspace
               desc: state must not depend on workspace preparation
     errcheck:
       exclude-functions:

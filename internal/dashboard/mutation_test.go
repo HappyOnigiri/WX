@@ -9,9 +9,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
 )
 
 // TestMutationMoveKeepsSelectionAndVisibleWindowAtBothEnds は、選択移動の加減算と
@@ -171,12 +171,15 @@ func TestMutationExecutionRefreshMatchesEveryEnvironmentQualifier(t *testing.T) 
 	cfg.Workspaces["/tmp/zeta"] = config.Workspace{Repositories: map[string]config.Repository{"backend": {}, "frontend": {}}}
 	base := newModel(context.Background(), Options{Config: cfg})
 	for index, want := range base.configEnvironments() {
-		if want.scope != config.V2ScopeWorkspace && want.scope != config.V2ScopeRepository {
-			continue
-		}
 		m := newModel(context.Background(), Options{Config: cfg})
 		m.tab, m.settingsOpen, m.settingsEnv, m.target = 2, true, index, want.target
-		updated, _ := m.Update(executionMsg{config: cfg})
+		refreshed := config.DefaultsV2()
+		for path, workspace := range cfg.Workspaces {
+			refreshed.Workspaces[path] = workspace
+		}
+		// 先行workspaceの追加後も同じ環境へ戻る。
+		refreshed.Workspaces["/tmp/beta"] = config.Workspace{}
+		updated, _ := m.Update(executionMsg{config: refreshed})
 		got := updated.(model)
 		if got.settingsEnv >= len(got.configEnvironments()) {
 			t.Fatalf("scope=%q target=%q repository=%q settingsEnv=%d out of range", want.scope, want.target, want.repository, got.settingsEnv)
@@ -296,6 +299,10 @@ func TestMutationActivateUsesTheSetupBoundaryBeforeFixedMenu(t *testing.T) {
 	got = updated.(model)
 	if got.pending.command != tabMenus[5][0].command || got.mode != modeConfirm {
 		t.Fatalf("fixed menu after setup state=%+v, want daemon confirmation", got)
+	}
+	got.finishPending()
+	if !slices.Equal(got.result.Args, []string{"daemon", "start"}) {
+		t.Fatalf("fixed menu action=%v, want daemon start", got.result.Args)
 	}
 }
 

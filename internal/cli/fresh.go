@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // launchPlan は 1 回の agent 起動に必要な、解決済みの再開先と worktree の選択を持つ。

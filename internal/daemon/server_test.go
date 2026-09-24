@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
 )
 
 func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
@@ -29,6 +29,22 @@ func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
 	if !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second lock error = %v", err)
 	}
+}
+
+func TestDaemonRuntimeLockReleaseAllowsNextOwner(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "daemon.lock")
+	first, err := acquireDaemonLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseDaemonLock(first)
+
+	second, err := acquireDaemonLock(path)
+	if err != nil {
+		t.Fatalf("acquire lock after releasing its owner: %v", err)
+	}
+	releaseDaemonLock(second)
 }
 
 func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {

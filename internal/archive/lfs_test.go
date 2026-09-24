@@ -2,13 +2,18 @@ package archive
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func TestSnapshotTreeDiffCursorProgress(t *testing.T) {
@@ -124,5 +129,29 @@ func TestLogLFSOptimizationWarning(t *testing.T) {
 	manager.logLFSOptimizationWarning("test", errors.New("test failure"))
 	if !strings.Contains(logged.String(), "LFS cache optimization skipped") {
 		t.Fatalf("log output=%q", logged.String())
+	}
+}
+
+// TestSnapshotAttemptsLFSCompactionForChangedPointer は、snapshot で新しく現れた LFS pointer を
+// cache 最適化へ渡し、利用できない mode では理由を記録することを確認する。
+func TestSnapshotAttemptsLFSCompactionForChangedPointer(t *testing.T) {
+	repository, repo, manager, _ := archiveFixture(t)
+	manager.Preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	var logged bytes.Buffer
+	manager.Preparer.Log = slog.New(slog.NewTextHandler(&logged, nil))
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 42\n"
+	if err := os.WriteFile(filepath.Join(repository, "weights.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "lfs-pointer", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("snapshot with an LFS pointer: %v", err)
+	}
+	if got := gitCommand(t, repository, "show", snapshot.WorktreeOID+":weights.bin"); got != strings.TrimSuffix(pointer, "\n") {
+		t.Fatalf("snapshot pointer=%q, want %q", got, strings.TrimSuffix(pointer, "\n"))
+	}
+	if output := logged.String(); !strings.Contains(output, "LFS cache CoW skipped") || !strings.Contains(output, "candidates=1") {
+		t.Fatalf("changed LFS pointer did not reach the skip diagnostic: %s", output)
 	}
 }

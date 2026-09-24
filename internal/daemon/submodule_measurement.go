@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"sort"
 
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // PrepareSubmoduleSummary は repository と深さごとの submodule 結果の集計である。

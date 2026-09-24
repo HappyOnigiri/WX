@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 func TestParseGitlinksKeepsOnlySubmoduleEntries(t *testing.T) {
@@ -89,6 +90,10 @@ func TestProbeSubmoduleFindingsIgnorePreparedOutOfScopePath(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(findings[0].Details, "\n"), "0 submodule(s) checked") {
 		t.Fatalf("details = %+v, want excluded submodule omitted from checked count", findings[0].Details)
+	}
+	localized := diag.Resolve(diag.Reply{Findings: findings}, i18n.Japanese).Findings[0]
+	if !strings.Contains(strings.Join(localized.Details, "\n"), "0 件の submodule を検査しました") {
+		t.Fatalf("localized details = %+v, want excluded submodule omitted from checked count", localized.Details)
 	}
 }
 

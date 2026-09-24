@@ -4,7 +4,7 @@ RELEASE_DIR ?= artifacts/release
 # バージョンの真実源はリリースタグ（vX.Y.Z）である。
 # 他のタグを起点に選ばないよう--matchで絞り、タグを取得していないcheckoutではコミットへ退避する。
 VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$(VERSION) -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=dev
+LDFLAGS := -s -w -X github.com/HappyOnigiri/WorktreeX/internal/version.Version=$(VERSION) -X github.com/HappyOnigiri/WorktreeX/internal/version.BuildMeta=dev
 CI_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 CI_MAKEFLAGS := -j$(CI_JOBS) --keep-going $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
 TOOLS_DIR := $(CURDIR)/.tools
@@ -133,12 +133,12 @@ release-check:
 
 fmt:
 	"$(TOOLS_BIN)/gofumpt" -w cmd internal migrations tools
-	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" write -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)"
+	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" write -s standard -s default -s "prefix(github.com/HappyOnigiri/WorktreeX)"
 
 fmt-check:
 	@test -x "$(TOOLS_BIN)/gofumpt" -a -x "$(TOOLS_BIN)/gci" || { echo "pinned formatters are missing; run make setup"; exit 1; }
 	@test -z "$$($(TOOLS_BIN)/gofumpt -l cmd internal migrations tools)" || { $(TOOLS_BIN)/gofumpt -l cmd internal migrations tools; echo "run make fmt"; exit 1; }
-	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)"
+	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WorktreeX)"
 
 vet:
 	$(GO) vet ./...
@@ -426,7 +426,7 @@ license-check: setup-security-tools
 	@# go-licenses v2 misclassifies Go 1.27 standard packages as modules;
 	@# ignore the explicit `go list std` set while still resolving their dependencies.
 	@$(GO) list std | sed 's/^/--ignore=/' | xargs "$(TOOLS_BIN)/go-licenses" check ./... \
-	  --ignore=github.com/HappyOnigiri/WX --allowed_licenses="$(LICENSE_ALLOWLIST)"
+	  --ignore=github.com/HappyOnigiri/WorktreeX --allowed_licenses="$(LICENSE_ALLOWLIST)"
 
 secret-check: setup-security-tools
 	@test -x "$(TOOLS_BIN)/gitleaks" || { echo "pinned secret scanner is missing; run make setup-security-tools"; exit 1; }

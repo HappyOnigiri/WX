@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
 )
 
 func TestPromptContainsSetupBoundariesAndConvergenceCommand(t *testing.T) {

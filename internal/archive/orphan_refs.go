@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // OrphanRef は削除候補の ref と、分類時に読み取った object ID。削除はこの OID を期待値として渡す。

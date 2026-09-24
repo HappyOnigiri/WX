@@ -14,7 +14,7 @@ Goのリポジトリにバージョンを書いたmanifestを置かないため�
 
 ## リリースの流れ
 
-リリースの準備・公開は[HappyOnigiri/ReleaseActions](https://github.com/HappyOnigiri/ReleaseActions)の共通Actionへ委ね、WX側のworkflowは入力の受け口と成果物のビルドだけを持つ。
+リリースの準備・公開は[HappyOnigiri/ReleaseActions](https://github.com/HappyOnigiri/ReleaseActions)の共通Actionへ委ね、Worktree X側のworkflowは入力の受け口と成果物のビルドだけを持つ。
 例外は前回リリース以降のmerge済みPR数をmain宛PRへ知らせる`release-reminder.yml`である。
 
 `release.yml`を手動実行すると、リリースブランチとchangelogを本文に持つリリースPRができる。

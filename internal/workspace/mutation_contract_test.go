@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 type mutationDiagnosticFile struct {
@@ -158,6 +158,20 @@ func TestPhaseNeedsTrackedStatusRefreshOnlyForCreate(t *testing.T) {
 func TestCloseIdentityDirectoryAcceptsMissingDescriptor(t *testing.T) {
 	t.Parallel()
 	closeIdentityDirectory(nil)
+}
+
+func TestCloseIdentityDirectoryClosesDescriptor(t *testing.T) {
+	t.Parallel()
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = directory.Close() })
+
+	closeIdentityDirectory(directory)
+	if _, err := directory.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Stat() error=%v, want %v", err, os.ErrClosed)
+	}
 }
 
 func TestExistingTargetStateRejectsMarkerOutsideRoot(t *testing.T) {

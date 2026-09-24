@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // assertLeaseCommandExits は貸出コマンドを 1 回実行し、終了コードを確かめる。

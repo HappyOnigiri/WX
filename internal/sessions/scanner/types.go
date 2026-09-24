@@ -1,6 +1,6 @@
 package scanner
 
-import "github.com/HappyOnigiri/WX/internal/sessions/identity"
+import "github.com/HappyOnigiri/WorktreeX/internal/sessions/identity"
 
 // Session はセッション再開に必要なメタ情報だけを保持する。
 // Size は走査時の stat から得た JSONL のバイト数で、picker が会話の規模の目安として出す。

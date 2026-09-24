@@ -10,9 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
-	"github.com/HappyOnigiri/WX/internal/sessions/metacache"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/metacache"
 )
 
 // Options は走査が使う cache と計測先を表す。ゼロ値は cache を使わない従来どおりの走査である。

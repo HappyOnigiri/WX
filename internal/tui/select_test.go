@@ -46,6 +46,14 @@ func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestSelectionContentShowsSelectionDescription(t *testing.T) {
+	selection := Selection{Title: "Choose", Description: "Choose how to continue"}
+	view := (selectionModel{selection: selection}).content()
+	if !strings.Contains(view, "\n? Choose\n  Choose how to continue\n\n") {
+		t.Fatalf("selection description missing from content: %q", view)
+	}
+}
+
 func TestSelectionClearOnExitRemovesCompletedView(t *testing.T) {
 	selection := testSelection()
 	selection.ClearOnExit = true

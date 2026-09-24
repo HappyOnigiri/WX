@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestScheduleDropsWorkAfterCancellation(t *testing.T) {
@@ -26,6 +26,24 @@ func TestScheduleDropsWorkAfterCancellation(t *testing.T) {
 	m.schedule(state.Job{ID: "dropped", Kind: "SNAPSHOT", SessionID: "session"})
 	if pending, _ := m.jobQueue.counts(jobClassInteractive); pending != 0 {
 		t.Fatalf("canceled schedule queued %d jobs", pending)
+	}
+}
+
+func TestPreparationWasStartedReflectsStagedPreparationBoundary(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "preparation-boundary", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatalf("create preparing slot: %v", err)
+	}
+	if manager.preparationWasStarted(slot.ID) {
+		t.Fatal("preparation reported started before the staged boundary")
+	}
+	if err := store.BeginStagedPreparation(ctx, slot.ID); err != nil {
+		t.Fatalf("begin staged preparation: %v", err)
+	}
+	if !manager.preparationWasStarted(slot.ID) {
+		t.Fatal("preparation was not reported started after the staged boundary")
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // writeRepositoryFiles は fixture の main worktree へ file を作る。

@@ -94,12 +94,17 @@ internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63
 internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
 internal/cli/lease.go	ast-v1:800b2af1a157128c2104a7b26855f9409503a322007e924772d1d968f049276c	PID=0 は正規化前後とも所有者なしを表す 0 を返し、<=0 と <0 の分岐結果は観測可能な戻り値を変えない等価変異
 internal/cli/resume.go	ast-v1:b3f681312930e7664d512e30bd46d59bb5cbba77768660806364dc71a977b493	末尾の値付きflagでは比較子を<から<=へ変えても次の反復がなく、codexExecIndexの結果が変わらないため
+internal/cli/resume.go	ast-v1:e153099b57c078d4c753eab9da0b5b65ce29fc46d67be51bb2883ca1f15b27c9	末尾の値付きflagではi+1<len(args)をi-1<len(args)にしても余分なi++後に次の反復がなく、codexExecIndexの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:214443b9d4955ba9f08be5859d15483f16b5b6d9f85edeebc8f31591bc7cf66d	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:df3711ba4cd88531546cae741ade2e0909b1a7c337da4fd55f5de770f185fbb7	末尾の--cdではi+1<len(args)をi-1<len(args)にしても余分なi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
 internal/cli/resume.go	ast-v1:cdc64275925e49cdb27de88f6d76b27f784bea8b536ba43c50f1e47760e113f1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
 internal/cli/resume.go	ast-v1:b2be3e54c1189dc5e611ab5aedf033ec96e55305d19e4f29a22f74782183dab1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
 internal/cli/resume_intent.go	ast-v1:c62304e1b6beb6fc096b71dd69817b927880c3bde3a5fc17b85894d939fa6ee4	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、stripCodexCDArgsの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:eac57a4e37c50157d743e8b7740744ec051bfff0bba5bb753e480369cfbdb4e1	末尾の--cdではi+1<len(args)をi-1<len(args)にしても余分なi++後に次の反復がなく、stripCodexCDArgsの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:2000534d5fd4b459c11d6c532d2beeb84ae83a2d1ee3f0a9fabc4b238029208a	exec後の値付きflagが末尾にある場合は、比較子を<=にしても次の反復がなくcodexResumeShapeの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:1bc3b339fcdeee579e8c9cae33ad8bcc5e7b7e7dffbbfaf539d44b876f26b48e	exec後の末尾optionではj+1<len(args)をj-1<len(args)にしても余分なj++後に次の反復がなく、codexResumeShapeの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:5ac07e81a8a9e01c815a76b7e7d227bf5cc877f915c5d251424399e06d689567	末尾の値付きglobal flagで比較子を<から<=へ変えても次の反復がなく、codexResumeShapeの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:fce0dacd63ada0483c64d143cc7f0a50c202beaaa443e60ffae758303ac35630	末尾の値付きglobal flagではi+1<len(args)をi-1<len(args)にしても余分なi++後に次の反復がなく、codexResumeShapeの結果が変わらないため
 internal/archive/lfs.go	ast-v1:79b49d98d509e68063cd6923dbce81d5806b764abad5b48f0dec2c2395afb8a5	strings.Fields で len(fields) >= 5 を通る status は常に非空なので、len(status) の > と >= は同じ動作になる
 internal/archive/archive.go	ast-v1:34182c3d6f8fc7b8ba1ae795f540bb098eaa9176623191f4df9e24ed16ffb0fd	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
 internal/archive/conflict.go	ast-v1:94843e96bca06c241f246c5b3b2f6a6c46202d97191394b91995d49f406328c3	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
@@ -114,7 +119,13 @@ internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
 internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
 internal/daemon/usage.go	ast-v1:16c8791c91bfe238d55a24852342e93ddf39d8bb3d24a9ed843c08e5fd5cf083	map の初期容量は内容・len・戻り値を変えないため、previous と measured の長さの加算を減算へ変えても観測可能な差がない
+internal/daemon/roots.go	ast-v1:2b05f22a8dab05697358faab37361fa1a9a10dca98559598dbf18f4a5ff59411	rootForPath は roots と rootIdentities の全要素を後続ループで map へ挿入し、容量hintは上限でなく不足時にgrowするため、加算を減算へ変えても集合と選択結果は変わらない。負hintもGo runtimeで0として扱われる
+internal/daemon/roots.go	ast-v1:e6f58585331b3cbbf135845ee9a407adecbddd4181138a9e45cff5f168f5c6e6	rootForPath は全候補を並べ替えた後に path を含む root を選ぶ。別々の root が同じ path を含むなら一方は他方の子で path 長が異なり、同じ長さの候補は同時に一致しない。同一 path の active/retired 候補は known map で統合されるため、active 比較を反転しても選択結果は変わらない
+internal/daemon/roots.go	ast-v1:877ebe59c367d2a810f1e0c5af35b3e40fbd9c8ef7d81addaefd5764f784276e	この符号は rootForPath の同じ長さの候補順だけを変える。path を含む root は同じ長さの別 root と両立せず、返す root を変えない
+internal/daemon/roots.go	ast-v1:97b0a350b832cc99d3eb75b2bf348d32acd6b48544792218d36ba027a64cb3a4	この符号は rootForPath の同じ長さの候補順だけを変える。path を含む root は同じ長さの別 root と両立せず、返す root を変えない
 internal/setup/message.go	ast-v1:a92297fd49cfed9993f1883a6e9997c4fdc97d46642859a7fdadd55e195e07f7	pairs の map 初期容量だけを決める除算で、乗算へ変えても収集する key/value と戻り値は変わらないため等価変異
 internal/sessions/scanner/parse.go	ast-v1:fce68a45baeb42b6d093187f4b2e30caabb0b38845706e17db43fdbc282efbe2	JSONL reader の初期 buffer サイズだけが変わり、ReadBytes の内容・解析結果・エラー契約は変わらないため等価変異
 internal/pool/branch.go	ast-v1:8ab1ec6b7e5034a2ac9fb726e1c1fdd8e228e333308e5ef0f51e5c66914c6b5c	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異
 internal/pool/branch.go	ast-v1:6b1342fc7dcf20dd150c56e9f51b466de29524dd7d1afc2e57c5a39ced3ded77	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異
+internal/archive/conflict.go	ast-v1:58c5b3b9fbd408d44c3af82626c3991c8626c5cc3a2e129666f61a0526681dc2	path が異なる場合だけ比較する分岐の内側なので、< と <= は同じ順序になる等価変異
+internal/archive/force_added.go	ast-v1:1114ad3a843732d34cf4b59029f0129fe4b8318c391fbeee07cbd79383f53d4e	tab が 0 の場合は変異前後どちらも空 metadata を field 数検査で拒否するため、< 0 と <= 0 は同じ動作になる等価変異

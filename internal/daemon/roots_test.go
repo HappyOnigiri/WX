@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *testing.T) {
@@ -174,5 +174,17 @@ func TestRootForPathKeepsEqualRegisteredRoot(t *testing.T) {
 	got, ok := m.rootForPath(path)
 	if !ok || got != root {
 		t.Fatalf("rootForPath(%q)=%q,%v want %q", path, got, ok, root)
+	}
+}
+
+func TestRootForPathFindsRetiredRootIdentityWithoutActiveRoot(t *testing.T) {
+	t.Parallel()
+	retiredRoot := t.TempDir()
+	path := filepath.Join(retiredRoot, "workspace", "slot")
+	m := &Manager{rootIdentities: map[string]string{retiredRoot: "generation"}}
+
+	got, ok := m.rootForPath(path)
+	if !ok || got != retiredRoot {
+		t.Fatalf("rootForPath(%q)=%q,%v want retired root %q", path, got, ok, retiredRoot)
 	}
 }

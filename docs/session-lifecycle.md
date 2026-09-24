@@ -82,6 +82,12 @@
    素のworktreeはslotの準備も保存も返却も受けられないためで、安全に写せない形は写し方を案内して拒否する。
    判定はコマンド文字列の静的な解析だけで行い、候補を同定できない入力は通す。
 
+   管理下のsessionでは、同じhookが`Agent(isolation="worktree")`と、linked worktreeへブランチをattachする`checkout`・`switch`・`symbolic-ref`も拒否する。
+   前者はwx管理外のworktreeを残してlink ruleも適用しないため、後者はslotをdetachedのまま保つためである。
+   attachの判定はcdとサブシェルを追って各git呼び出しの実行先を決め、対象のgit呼び出しを含むのに実行先や引数を静的に決められない場合は見逃しを避けて拒否する。
+   判定は1回のhookで1つだけ出し、`git worktree add`の書き換えを優先する。
+   拒否はdaemonを必要としないので準備完了を待たずに出し、書き換えだけを準備完了の後に出す。daemonに届かずhookが失敗で終わると、agentは操作を通してしまうためである。
+
    この書き換えは`wx -n`（`--no-worktree`）の直接起動でも効く。
    直接起動にはsessionが無いので、wxは書き換えの境界（起動元worktreeのtoplevel）と所有プロセスを環境変数で子へ渡し、hookはdaemonへ接続せず判定だけをその場で出す。
    有効にするのは`-n`を明示し、かつその workspace の保存済み方針が`hot`か`cold`のときに限る。`off` / `ask`では書き換え先の`wx new`自体がdaemonに拒否されるため、書き換えずに素通しする。

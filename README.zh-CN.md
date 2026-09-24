@@ -1,9 +1,9 @@
-# wx
+# Worktree X
 
 [English](README.md) | [日本語](README.ja.md) | 简体中文
 
 只需一条命令，即可在独立的 Git worktree 中启动 Claude Code 或 Codex。
-`wx` 负责在 macOS 上准备和管理工作环境，让你无需切换原仓库的分支，就能把任务交给智能体。
+Worktree X（`wx`）负责在 macOS 上准备和管理工作环境，让你无需切换原仓库的分支，就能把任务交给智能体。
 
 ## 特性
 
@@ -17,7 +17,7 @@
 需要 **搭载 Apple Silicon 的 macOS**、**Git**，以及 **Claude Code 或 Codex**。
 
 ```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/HappyOnigiri/WorktreeX/releases/latest/download/install.sh | bash
 ```
 
 ## 快速开始
@@ -58,7 +58,7 @@ wx codex resume
 ## 卸载
 
 ```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
+curl -fsSL https://github.com/HappyOnigiri/WorktreeX/releases/latest/download/uninstall.sh | bash
 ```
 
 删除 wx 管理的 worktree（包括未保存的工作）、hook 条目、LaunchAgent、配置文件和可执行文件。
@@ -66,5 +66,5 @@ curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall
 ## 参与贡献
 
 欢迎参与贡献！
-你可以通过 [Issues](https://github.com/HappyOnigiri/WX/issues) 报告问题或提出想法，也可以提交 [Pull Request](https://github.com/HappyOnigiri/WX/pulls)。
+你可以通过 [Issues](https://github.com/HappyOnigiri/WorktreeX/issues) 报告问题或提出想法，也可以提交 [Pull Request](https://github.com/HappyOnigiri/WorktreeX/pulls)。
 同样欢迎改进文档和翻译。

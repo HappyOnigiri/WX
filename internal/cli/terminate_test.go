@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
 )
 
 func TestAgentTerminatorSignalsOnceAndOnlyAfterAdoption(t *testing.T) {

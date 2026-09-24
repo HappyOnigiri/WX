@@ -12,7 +12,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 const (

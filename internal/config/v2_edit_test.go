@@ -193,6 +193,30 @@ func TestV2RepositoryEditUsesTheExistingRawMembershipKey(t *testing.T) {
 	}
 }
 
+// 同じ membership を指す raw key が複数あるときも、編集先を map iteration に依存させない。
+func TestV2RepositoryEditSelectsTheMinimumMatchingRawKey(t *testing.T) {
+	root := t.TempDir()
+	raw := Config{
+		Version: 2,
+		Workspaces: map[string]Workspace{root: {
+			Repositories: map[string]Repository{
+				"api":   {Readiness: RepositoryReadiness{Mode: "plain"}},
+				"./api": {Readiness: RepositoryReadiness{Mode: "dot"}},
+			},
+		}},
+	}
+	if err := SetV2Field(&raw, V2ScopeRepository, root, "api", "readiness.mode", "early"); err != nil {
+		t.Fatal(err)
+	}
+	repositories := raw.Workspaces[root].Repositories
+	if got := repositories["./api"].Readiness.Mode; got != "early" {
+		t.Fatalf("./api readiness.mode=%q, want early", got)
+	}
+	if got := repositories["api"].Readiness.Mode; got != "plain" {
+		t.Fatalf("api readiness.mode=%q, want plain", got)
+	}
+}
+
 // documentRepositories は保存された document から唯一の workspace の membership map を取り出す。
 func documentRepositories(t *testing.T, document map[string]any) map[string]any {
 	t.Helper()

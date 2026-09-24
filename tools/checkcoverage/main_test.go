@@ -45,10 +45,10 @@ func TestLoadExclusionsRejectsMissingAndUnexplainedEntries(t *testing.T) {
 func TestReadProfileMergesDuplicateBlocksAndComputesScopes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coverage.out")
 	profile := "mode: atomic\n" +
-		"github.com/HappyOnigiri/WX/internal/state/store.go:1.1,1.2 2 0\n" +
-		"github.com/HappyOnigiri/WX/internal/state/store.go:1.1,1.2 2 1\n" +
-		"github.com/HappyOnigiri/WX/cmd/wx/main.go:1.1,1.2 2 0\n" +
-		"github.com/HappyOnigiri/WX/migrations/embed.go:1.1,1.2 100 0\n"
+		"github.com/HappyOnigiri/WorktreeX/internal/state/store.go:1.1,1.2 2 0\n" +
+		"github.com/HappyOnigiri/WorktreeX/internal/state/store.go:1.1,1.2 2 1\n" +
+		"github.com/HappyOnigiri/WorktreeX/cmd/wx/main.go:1.1,1.2 2 0\n" +
+		"github.com/HappyOnigiri/WorktreeX/migrations/embed.go:1.1,1.2 100 0\n"
 	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestReadProfileRejectsMalformedLines(t *testing.T) {
 
 func TestRejectZeroCoreFunctionsUsesGoCoverageReport(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coverage.out")
-	profile := "mode: set\ngithub.com/HappyOnigiri/WX/internal/state/store.go:171.1,171.2 1 0\n"
+	profile := "mode: set\ngithub.com/HappyOnigiri/WorktreeX/internal/state/store.go:171.1,171.2 1 0\n"
 	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestRejectZeroCoreFunctionsUsesGoCoverageReport(t *testing.T) {
 func TestRunCoverageGate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coverage.out")
 	profile := "mode: set\n" +
-		"github.com/HappyOnigiri/WX/cmd/wx/main.go:1.1,1.2 1 1\n"
+		"github.com/HappyOnigiri/WorktreeX/cmd/wx/main.go:1.1,1.2 1 1\n"
 	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRunCoverageGate(t *testing.T) {
 	if err := run(context.Background(), []string{"-profile", path, "-exclusions", filepath.Join(t.TempDir(), "missing")}, &output); err == nil {
 		t.Fatal("missing exclusions file succeeded")
 	}
-	if got := percentage(map[string]block{"github.com/HappyOnigiri/WX/cmd/wx/main.go:1": {statements: 1}}, "", []exclusion{{path: "cmd/wx/main.go"}}); got != 0 {
+	if got := percentage(map[string]block{"github.com/HappyOnigiri/WorktreeX/cmd/wx/main.go:1": {statements: 1}}, "", []exclusion{{path: "cmd/wx/main.go"}}); got != 0 {
 		t.Fatalf("excluded-only percentage=%v", got)
 	}
 }

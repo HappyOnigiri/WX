@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/pool"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/pool"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func (m *Manager) reconcileStandbyReplenishments(ctx context.Context) {
@@ -113,12 +113,16 @@ func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspa
 		if err != nil {
 			return err
 		}
-		if job.ID == "" {
-			continue
-		}
-		m.schedule(job)
+		m.scheduleStandbyJob(job)
 	}
 	return nil
+}
+
+func (m *Manager) scheduleStandbyJob(job state.Job) {
+	if job.ID == "" {
+		return
+	}
+	m.schedule(job)
 }
 
 // workspaceConfigurationChanged は補充計画の入力が再読込で変わったかを判定する。

@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func TestRecordPrepareSubmodulesAggregatesByRepositoryAndDepth(t *testing.T) {

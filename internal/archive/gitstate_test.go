@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // 停止中 rebase は working tree が clean なので snapshot の clean 短絡を通る。

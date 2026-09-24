@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // repositoryRules は1つのrepositoryについて解決済みのcopy rule / link ruleである。

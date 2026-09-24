@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
@@ -229,4 +229,15 @@ func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 	if leased {
 		t.Fatal("outside-root path was recorded as a lease")
 	}
+}
+
+func TestHoldRootForPathSkipsPathOutsideConfiguredRoot(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+
+	release, err := f.Manager.holdRootForPath(filepath.Join(t.TempDir(), "outside"))
+	if err != nil {
+		t.Fatalf("outside-root path hold error=%v, want no-op success", err)
+	}
+	release()
 }

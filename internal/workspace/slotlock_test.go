@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 func TestLockSlotExcludesTheSameSlotAndAllowsOthers(t *testing.T) {

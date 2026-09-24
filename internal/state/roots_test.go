@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 func TestEnsureActiveRootRegistersAndRetiresGenerations(t *testing.T) {

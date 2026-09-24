@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
-	"github.com/HappyOnigiri/WX/internal/sessions/metacache"
-	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
-	"github.com/HappyOnigiri/WX/internal/sessions/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/metacache"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/tui"
 )
 
 type (

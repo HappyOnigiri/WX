@@ -21,7 +21,7 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 		t.Fatalf("daemon calls=%q", got)
 	}
 	for _, url := range strings.Fields(readFile(t, filepath.Join(f.root, "curl.log"))) {
-		if !strings.HasPrefix(url, "https://github.com/HappyOnigiri/WX/releases/download/v1.2.3/") {
+		if !strings.HasPrefix(url, "https://github.com/HappyOnigiri/WorktreeX/releases/download/v1.2.3/") {
 			t.Fatalf("download is not pinned: %q", url)
 		}
 	}

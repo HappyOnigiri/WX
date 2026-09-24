@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // 履歴は上限件数だけを新しい順で残し、slot と貸出先 session のどちらからでも引ける。

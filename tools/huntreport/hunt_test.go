@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 // flakyModule は、実行ごとに結果が変わるテストを1つ持つモジュールを作る。

@@ -245,10 +245,7 @@ func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit int
 		return false, err
 	}
 	if currentGeneration != slot.Generation {
-		if err := tx.Commit(); err != nil {
-			return false, err
-		}
-		return false, nil
+		return finishUnreservedStandbyReservation(tx)
 	}
 	count, err := standbyCountTx(ctx, tx, slot.WorkspaceID)
 	if err != nil {
@@ -264,6 +261,14 @@ func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit int
 		return false, err
 	}
 	return true, nil
+}
+
+// finishUnreservedStandbyReservation は slot を予約しない transaction を閉じ、commit の失敗を返す。
+func finishUnreservedStandbyReservation(tx interface{ Commit() error }) (bool, error) {
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // RegisterReservedStandby は identity を確定した予約 slot に待機用 repository と job を登録する。

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // 補充と GC は同じ workspace 個別の保持期間で判断する。

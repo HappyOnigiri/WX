@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/hookconfig"
 )
 
 // TestRemoveUndoesSetup は setup が書いたものを Remove が消し、shell 起動ファイルだけを残すことを確認する。

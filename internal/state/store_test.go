@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 func TestFailedStandbyBlocksUnboundedPoolRefill(t *testing.T) {

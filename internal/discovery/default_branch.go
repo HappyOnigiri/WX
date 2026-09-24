@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // resolveDefaultBranch は明示設定のない repository について、手元の Git

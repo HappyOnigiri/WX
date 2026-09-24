@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
 )
 
 // 自身を置き換える launchctl 呼び出しの制限時間。

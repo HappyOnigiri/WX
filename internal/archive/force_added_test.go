@@ -130,8 +130,28 @@ func TestSnapshotRecordsRemovalOfForceAddedIgnoredPath(t *testing.T) {
 	}
 }
 
-func TestParseStageZeroEntryRejectsRecordsWithoutTab(t *testing.T) {
-	if mode, oid, path, ok := parseStageZeroEntry("100644 " + strings.Repeat("a", 40) + " 0"); ok || mode != "" || oid != "" || path != "" {
-		t.Fatalf("malformed entry accepted: mode=%q oid=%q path=%q ok=%v", mode, oid, path, ok)
+func TestParseStageZeroEntry(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	tests := []struct {
+		name      string
+		entry     string
+		wantMode  string
+		wantOID   string
+		wantPath  string
+		wantValid bool
+	}{
+		{name: "missing tab", entry: "100644 " + oid + " 0"},
+		{name: "empty metadata", entry: "\tpath"},
+		{name: "unmerged stage", entry: "100644 " + oid + " 2\tpath"},
+		{name: "stage zero", entry: "100755 " + oid + " 0\tpath", wantMode: "100755", wantOID: oid, wantPath: "path", wantValid: true},
+		{name: "tab in path", entry: "100644 " + oid + " 0\tpath\twith-tab", wantMode: "100644", wantOID: oid, wantPath: "path\twith-tab", wantValid: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mode, gotOID, path, ok := parseStageZeroEntry(test.entry)
+			if ok != test.wantValid || mode != test.wantMode || gotOID != test.wantOID || path != test.wantPath {
+				t.Fatalf("parseStageZeroEntry(%q)=(%q, %q, %q, %v), want (%q, %q, %q, %v)", test.entry, mode, gotOID, path, ok, test.wantMode, test.wantOID, test.wantPath, test.wantValid)
+			}
+		})
 	}
 }

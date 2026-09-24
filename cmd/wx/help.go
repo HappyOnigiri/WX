@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // help 本文は internal/i18n の catalog がコマンド単位のブロックとして言語ごとに持つ。

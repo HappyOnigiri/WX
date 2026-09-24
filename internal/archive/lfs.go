@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 const maxLFSPointerBlobBytes = 1 << 20

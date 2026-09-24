@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 func TestAgentTerminatorConfirmMutationBoundariesRespectRequestID(t *testing.T) {

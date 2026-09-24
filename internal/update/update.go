@@ -13,12 +13,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/version"
+	"github.com/HappyOnigiri/WorktreeX/internal/version"
 )
 
 // 配布元は固定である。scripts/install.sh も同じ repository のリリース資産だけを取得する。
 const (
-	ownerRepository = "HappyOnigiri/WX"
+	ownerRepository = "HappyOnigiri/WorktreeX"
 	// LatestReleaseAPI は draft と prerelease を除いた最新リリースを返す。
 	// 公開に失敗して draft のまま残ったリリースを拾わないため、tags API ではなくこれを使う。
 	LatestReleaseAPI = "https://api.github.com/repos/" + ownerRepository + "/releases/latest"

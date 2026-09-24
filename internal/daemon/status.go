@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/state"
-	buildversion "github.com/HappyOnigiri/WX/internal/version"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	buildversion "github.com/HappyOnigiri/WorktreeX/internal/version"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func (m *Manager) Status(ctx context.Context) (map[string]any, error) {

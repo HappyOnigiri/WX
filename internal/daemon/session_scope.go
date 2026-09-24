@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 type WorkspaceScope struct {
@@ -74,12 +74,10 @@ func (m *Manager) registeredScopeWorkspace(ctx context.Context, cwd string) (sta
 		member := false
 		if isRepository {
 			member, err = m.store.WorkspaceHasCommonDir(ctx, slotScope.ID, common)
-			if err != nil {
-				return state.ScopeWorkspace{}, false, err
-			}
 		}
-		if !isRepository || member {
-			return slotScope, true, nil
+		resolvedScope, found, membershipErr := registeredSlotScope(slotScope, isRepository, member, err)
+		if membershipErr != nil || found {
+			return resolvedScope, found, membershipErr
 		}
 	}
 	if !isRepository {
@@ -97,6 +95,17 @@ func (m *Manager) registeredScopeWorkspace(ctx context.Context, cwd string) (sta
 	}
 	scope.Root = root
 	return scope, true, nil
+}
+
+// registeredSlotScope は membership の照合失敗を通常探索へ読み替えず、slot記録を使える条件だけを返す。
+func registeredSlotScope(slotScope state.ScopeWorkspace, isRepository, member bool, membershipErr error) (state.ScopeWorkspace, bool, error) {
+	if membershipErr != nil {
+		return state.ScopeWorkspace{}, false, membershipErr
+	}
+	if !isRepository || member {
+		return slotScope, true, nil
+	}
+	return state.ScopeWorkspace{}, false, nil
 }
 
 // discoveredScopeWorkspace は高速経路で確定できなかった cwd を従来の探索で解決し、登録の有無を返す。
