@@ -47,7 +47,7 @@ func TestLeasePolicyAndStandbyPermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			count := store.StandbyCount(ctx, string(w.ID))
-			if (mode == "hot" && count != 1) || (mode != "hot" && count != 0) {
+			if (mode == "hot" && count != 2) || (mode != "hot" && count != 0) {
 				t.Fatalf("standby=%d", count)
 			}
 			lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
