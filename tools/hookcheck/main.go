@@ -53,10 +53,7 @@ func runCLI(parent context.Context, args []string, out, errOut io.Writer) error 
 	if err != nil {
 		return err
 	}
-	selection, err := selectChecks(rootPath, changed)
-	if err != nil {
-		return err
-	}
+	selection := selectChecks(changed)
 	selection.note = fmt.Sprintf("selection: staged index %s; commands inspect the working tree (partial staging is not recreated)", indexPath)
 	if *plan {
 		printPlan(out, selection)

@@ -32,12 +32,7 @@ func TestParseDiffRejectsIncompleteRecord(t *testing.T) {
 
 func TestSelectChecksForMixedChanges(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	writeTestFile(t, root, "internal/state/state.go", "package state\n")
-	writeTestFile(t, root, "internal/daemon/daemon.go", "package daemon\n")
-	writeTestFile(t, root, "tools/hookcheck/main.go", "package main\n")
-	writeTestFile(t, root, "internal/agent/agent.go", "package agent\n")
-	selected, err := selectChecks(root, []changedFile{
+	selected := selectChecks([]changedFile{
 		{status: "M", path: "internal/state/state.go"},
 		{status: "M", path: "README.md"},
 		{status: "M", path: "migrations/004.sql"},
@@ -45,92 +40,44 @@ func TestSelectChecksForMixedChanges(t *testing.T) {
 		{status: "M", path: ".github/workflows/nightly.yml"},
 		{status: "M", path: "Makefile"},
 	})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
 	for _, name := range []string{"fmt-check", "check-fast", "gitexec-check", "docs-check", "migrations-check", "shell-check", "workflow-check", "fuzz-check"} {
 		if selected.checks[name] == nil {
 			t.Errorf("missing check %s", name)
 		}
 	}
-	if !selected.compile {
-		t.Error("Makefile change did not select compile check")
-	}
-	if selected.tests["./internal/state"] == nil || selected.tests["./tools/testfocus"] == nil {
-		t.Fatalf("tests=%#v", selected.tests)
-	}
-	if !selected.tests["./tools/testfocus"].countOne {
-		t.Error("test-focus validation test should disable result cache")
-	}
-	if len(selected.sortedTests()) != 2 {
-		t.Fatalf("sortedTests=%#v, want regular and count-one groups", selected.sortedTests())
-	}
 }
 
 func TestSelectChecksCoversHookSources(t *testing.T) {
 	t.Parallel()
-	selected, err := selectChecks(t.TempDir(), []changedFile{{status: "A", path: "scripts/hooks/pre-commit"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
+	selected := selectChecks([]changedFile{{status: "A", path: "scripts/hooks/pre-commit"}})
 	if selected.checks["shell-check"] == nil {
 		t.Fatalf("checks=%#v, want shell-check for a hook without a .sh suffix", selected.checks)
 	}
 }
 
-func TestSelectChecksSkipsDeletedPackage(t *testing.T) {
+// テストはGitHub Actionsへ任せるため、Goやtestdataの変更でもテストとコンパイルを選ばない。
+func TestSelectChecksNeverSelectsTests(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	selected, err := selectChecks(root, []changedFile{{status: "D", path: "internal/gone/gone.go"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
-	if len(selected.tests) != 0 {
-		t.Fatalf("tests=%#v, want no tests for deleted package", selected.tests)
-	}
-	if !strings.Contains(strings.Join(selected.skipped, "\n"), "package was deleted") {
-		t.Fatalf("skipped=%v", selected.skipped)
-	}
-}
-
-func TestSelectChecksTreatsRenameAsDeleteAndAdd(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	writeTestFile(t, root, "internal/newpkg/new.go", "package newpkg\n")
-	selected, err := selectChecks(root, []changedFile{
-		{status: "D", path: "internal/oldpkg/old.go"},
-		{status: "A", path: "internal/newpkg/new.go"},
+	selected := selectChecks([]changedFile{
+		{status: "M", path: "internal/daemon/manager.go"},
+		{status: "M", path: "internal/agent/testdata/input.txt"},
+		{status: "M", path: "go.mod"},
+		{status: "M", path: "Makefile"},
+		{status: "M", path: "tools/checkcomments/main.go"},
 	})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
+	var output bytes.Buffer
+	printPlan(&output, selected)
+	if strings.Contains(output.String(), "go test") {
+		t.Fatalf("plan selected tests: %q", output.String())
 	}
-	if selected.tests["./internal/newpkg"] == nil || len(selected.tests) != 1 {
-		t.Fatalf("tests=%#v", selected.tests)
-	}
-	if !strings.Contains(strings.Join(selected.skipped, "\n"), "package was deleted") {
-		t.Fatalf("skipped=%v", selected.skipped)
-	}
-}
-
-func TestSelectChecksFindsTestdataOwner(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	writeTestFile(t, root, "internal/agent/agent.go", "package agent\n")
-	selected, err := selectChecks(root, []changedFile{{status: "M", path: "internal/agent/testdata/input.txt"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
-	if selected.tests["./internal/agent"] == nil {
-		t.Fatalf("tests=%#v", selected.tests)
+	if !strings.Contains(output.String(), "internal/agent/testdata/input.txt: no matching check") {
+		t.Fatalf("plan=%q, want testdata-only change reported as unchecked", output.String())
 	}
 }
 
 func TestSelectChecksReportsUnknownFiles(t *testing.T) {
 	t.Parallel()
-	selected, err := selectChecks(t.TempDir(), []changedFile{{status: "M", path: "LICENSE"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
+	selected := selectChecks([]changedFile{{status: "M", path: "LICENSE"}})
 	if !selected.empty() || len(selected.skipped) != 1 {
 		t.Fatalf("selection=%#v", selected)
 	}
@@ -143,10 +90,7 @@ func TestSelectChecksReportsUnknownFiles(t *testing.T) {
 
 func TestSelectChecksRunsDocsForCustomMarkdownRules(t *testing.T) {
 	t.Parallel()
-	selected, err := selectChecks(t.TempDir(), []changedFile{{status: "M", path: "tools/checkdoclinks/wx014.mjs"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
+	selected := selectChecks([]changedFile{{status: "M", path: "tools/checkdoclinks/wx014.mjs"}})
 	if selected.checks["docs-check"] == nil {
 		t.Fatalf("checks=%#v", selected.checks)
 	}
@@ -168,17 +112,12 @@ func TestCleanEnvironmentRemovesRepositoryGitVariables(t *testing.T) {
 
 func TestPrintPlanUsesStableCommands(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	writeTestFile(t, root, "internal/state/state.go", "package state\n")
-	selected, err := selectChecks(root, []changedFile{{status: "M", path: "internal/state/state.go"}})
-	if err != nil {
-		t.Fatalf("selectChecks: %v", err)
-	}
+	selected := selectChecks([]changedFile{{status: "M", path: "internal/state/state.go"}})
 	selected.note = "note"
 	var output bytes.Buffer
 	printPlan(&output, selected)
 	text := output.String()
-	if !strings.Contains(text, "command: make fmt-check") || !strings.Contains(text, "go test -short ./internal/state") {
+	if !strings.Contains(text, "command: make fmt-check") || !strings.Contains(text, "command: make check-fast") {
 		t.Fatalf("plan=%q", text)
 	}
 }

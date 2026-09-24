@@ -23,21 +23,6 @@ func printPlan(out io.Writer, plan selection) {
 		printReasons(out, check.reasons)
 		_, _ = fmt.Fprintf(out, "  command: %s\n", formatCommand([]string{"make", check.name}))
 	}
-	if plan.compile {
-		_, _ = fmt.Fprintln(out, "- compile-all")
-		printReasons(out, plan.compileBy)
-		_, _ = fmt.Fprintf(out, "  command: %s\n", formatCommand([]string{"go", "test", "-run", "^$", "./..."}))
-	}
-	for _, test := range plan.sortedTests() {
-		args := []string{"go", "test", "-short"}
-		if test.countOne {
-			args = append(args, "-count=1")
-		}
-		args = append(args, test.packages...)
-		_, _ = fmt.Fprintf(out, "- package-test %s\n", strings.Join(test.packages, ", "))
-		printReasons(out, test.reasons)
-		_, _ = fmt.Fprintf(out, "  command: %s\n", formatCommand(args))
-	}
 	for _, reason := range plan.skipped {
 		_, _ = fmt.Fprintf(out, "- no checks: %s\n", reason)
 	}

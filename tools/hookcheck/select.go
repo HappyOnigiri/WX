@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,19 +12,11 @@ type checkSelection struct {
 	reasons []string
 }
 
-type testSelection struct {
-	packages []string
-	reasons  []string
-	countOne bool
-}
-
+// テストとコンパイルは選ばない。コミット時はfmtと静的検査だけに留め、テストはGitHub Actionsへ任せる。
 type selection struct {
-	checks    map[string]*checkSelection
-	tests     map[string]*testSelection
-	compile   bool
-	compileBy []string
-	skipped   []string
-	note      string
+	checks  map[string]*checkSelection
+	skipped []string
+	note    string
 }
 
 var checkOrder = []string{
@@ -57,21 +48,17 @@ var makefileChecks = []string{
 	"catalog-check",
 }
 
-func selectChecks(root string, files []changedFile) (selection, error) {
-	result := selection{
-		checks: map[string]*checkSelection{},
-		tests:  map[string]*testSelection{},
-	}
+func selectChecks(files []changedFile) selection {
+	result := selection{checks: map[string]*checkSelection{}}
 	if len(files) == 0 {
 		result.skipped = append(result.skipped, "staged diff is empty")
-		return result, nil
+		return result
 	}
 	for _, file := range files {
 		path := filepath.ToSlash(file.path)
 		reason := fmt.Sprintf("%s: %s", file.status, path)
 		matched := false
-		isGo := strings.HasSuffix(path, ".go")
-		if isGo {
+		if strings.HasSuffix(path, ".go") {
 			matched = true
 			result.addCheck("fmt-check", reason)
 			result.addCheck("check-fast", reason)
@@ -79,22 +66,10 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 			if strings.HasSuffix(path, "_test.go") {
 				result.addCheck("fuzz-check", reason)
 			}
-			if err := result.addFilePackage(root, file, reason, isTestdataPath(path)); err != nil {
-				return result, err
-			}
-		}
-		if isTestdataPath(path) {
-			matched = true
-			if !isGo {
-				if err := result.addFilePackage(root, file, reason, true); err != nil {
-					return result, err
-				}
-			}
 		}
 		if isMigrationPath(path) {
 			matched = true
 			result.addCheck("migrations-check", reason)
-			result.addTest("./internal/state", reason, false)
 		}
 		if isMarkdownPath(path) {
 			matched = true
@@ -108,7 +83,6 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 			matched = true
 			result.addCheck("shell-check", reason)
 			result.addCheck("automation-check", reason)
-			result.addScriptTest(path, reason)
 		}
 		if isWorkflowPath(path) {
 			matched = true
@@ -121,8 +95,6 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 		if path == "go.mod" || path == "go.sum" {
 			matched = true
 			result.addCheck("mod-tidy-check", reason)
-			result.compile = true
-			result.compileBy = appendUnique(result.compileBy, reason)
 		}
 		if path == "testlayout-exclusions.txt" {
 			matched = true
@@ -137,29 +109,20 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 			for _, check := range makefileChecks {
 				result.addCheck(check, reason)
 			}
-			result.compile = true
-			result.compileBy = appendUnique(result.compileBy, reason)
-			result.addTest("./tools/hookcheck", reason, false)
 		}
 		if isHookToolPath(path) {
 			matched = true
 			result.addCheck("automation-check", reason)
-			result.addTest("./tools/hookcheck", reason, false)
 		}
 		if structuralCheck, ok := structuralTool(path); ok {
 			matched = true
 			result.addCheck(structuralCheck, reason)
 		}
-		if matched && !isGo && !isTestdataPath(path) && isStructuralToolPath(path) {
-			if pkg := structuralPackage(path); pkg != "" {
-				result.addTest(pkg, reason, false)
-			}
-		}
 		if !matched {
 			result.skipped = append(result.skipped, fmt.Sprintf("%s: no matching check", reason))
 		}
 	}
-	return result, nil
+	return result
 }
 
 func (s *selection) addCheck(name, reason string) {
@@ -169,53 +132,6 @@ func (s *selection) addCheck(name, reason string) {
 		s.checks[name] = check
 	}
 	check.reasons = appendUnique(check.reasons, reason)
-}
-
-func (s *selection) addTest(pkg, reason string, countOne bool) {
-	test := s.tests[pkg]
-	if test == nil {
-		test = &testSelection{packages: []string{pkg}}
-		s.tests[pkg] = test
-	}
-	test.reasons = appendUnique(test.reasons, reason)
-	test.countOne = test.countOne || countOne
-}
-
-func (s *selection) addFilePackage(root string, file changedFile, reason string, testdata bool) error {
-	directory := filepath.Dir(filepath.FromSlash(file.path))
-	if testdata {
-		var found bool
-		directory, found = findOwnerPackage(root, directory)
-		if !found {
-			if file.status == "D" {
-				s.skipped = append(s.skipped, fmt.Sprintf("%s: testdata owner package no longer exists", reason))
-				return nil
-			}
-			directory = testdataOwnerDirectory(directory)
-		}
-	} else if !directoryHasGoFiles(filepath.Join(root, directory)) {
-		if file.status == "D" {
-			s.skipped = append(s.skipped, fmt.Sprintf("%s: package was deleted", reason))
-			return nil
-		}
-	}
-	pkg, err := packagePath(root, directory)
-	if err != nil {
-		return fmt.Errorf("resolve package for %s: %w", file.path, err)
-	}
-	s.addTest(pkg, reason, false)
-	return nil
-}
-
-func (s *selection) addScriptTest(path, reason string) {
-	switch {
-	case path == "scripts/test-focus.sh":
-		s.addTest("./tools/testfocus", reason, true)
-	case path == "scripts/test-darwin.sh":
-		s.addTest("./tools/testdarwin", reason, true)
-	case path == "scripts/build-release.sh", path == "scripts/install.sh", path == "scripts/uninstall.sh":
-		s.addTest("./tools/testrelease", reason, true)
-	}
 }
 
 func (s *selection) sortedChecks() []*checkSelection {
@@ -242,40 +158,8 @@ func (s *selection) sortedChecks() []*checkSelection {
 	return append(result, rest...)
 }
 
-func (s *selection) sortedTests() []*testSelection {
-	groups := map[bool]*testSelection{}
-	packages := make([]string, 0, len(s.tests))
-	for pkg := range s.tests {
-		packages = append(packages, pkg)
-	}
-	sort.Strings(packages)
-	for _, pkg := range packages {
-		test := s.tests[pkg]
-		group := groups[test.countOne]
-		if group == nil {
-			group = &testSelection{countOne: test.countOne}
-			groups[test.countOne] = group
-		}
-		group.packages = append(group.packages, pkg)
-		for _, reason := range test.reasons {
-			group.reasons = appendUnique(group.reasons, reason)
-		}
-	}
-	result := make([]*testSelection, 0, len(groups))
-	for _, group := range groups {
-		result = append(result, group)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].countOne != result[j].countOne {
-			return !result[i].countOne
-		}
-		return strings.Join(result[i].packages, " ") < strings.Join(result[j].packages, " ")
-	})
-	return result
-}
-
 func (s selection) empty() bool {
-	return len(s.checks) == 0 && len(s.tests) == 0 && !s.compile
+	return len(s.checks) == 0
 }
 
 func appendUnique(values []string, value string) []string {
@@ -285,15 +169,6 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-func isTestdataPath(path string) bool {
-	for _, part := range strings.Split(path, "/") {
-		if part == "testdata" {
-			return true
-		}
-	}
-	return false
 }
 
 func isMigrationPath(path string) bool {
@@ -358,92 +233,4 @@ func structuralTool(path string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func isStructuralToolPath(path string) bool {
-	_, ok := structuralTool(path)
-	return ok
-}
-
-func structuralPackage(path string) string {
-	for _, prefix := range []string{
-		"tools/checkcomments/",
-		"tools/checktests/",
-		"tools/checklines/",
-		"tools/checktestlayout/",
-		"tools/checkfuzz/",
-		"tools/checkgitexec/",
-		"tools/checkmigrations/",
-		"tools/checkautomation/",
-		"tools/checkdocsindex/",
-		"tools/checkcatalog/",
-	} {
-		if strings.HasPrefix(path, prefix) {
-			return "./" + strings.TrimSuffix(prefix, "/")
-		}
-	}
-	return ""
-}
-
-func findOwnerPackage(root, directory string) (string, bool) {
-	parts := strings.Split(filepath.ToSlash(directory), "/")
-	for index, part := range parts {
-		if part != "testdata" {
-			continue
-		}
-		owner := filepath.FromSlash(strings.Join(parts[:index], "/"))
-		if owner == "" {
-			owner = "."
-		}
-		return owner, directoryHasGoFiles(filepath.Join(root, owner))
-	}
-	for {
-		if directoryHasGoFiles(filepath.Join(root, directory)) {
-			return directory, true
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-		directory = parent
-	}
-	return "", false
-}
-
-func testdataOwnerDirectory(directory string) string {
-	parts := strings.Split(filepath.ToSlash(directory), "/")
-	for index, part := range parts {
-		if part == "testdata" {
-			owner := strings.Join(parts[:index], "/")
-			if owner == "" {
-				return "."
-			}
-			return filepath.FromSlash(owner)
-		}
-	}
-	return directory
-}
-
-func directoryHasGoFiles(directory string) bool {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
-			return true
-		}
-	}
-	return false
-}
-
-func packagePath(root, directory string) (string, error) {
-	relative, err := filepath.Rel(root, filepath.Join(root, directory))
-	if err != nil {
-		return "", err
-	}
-	if relative == "." {
-		return ".", nil
-	}
-	return "./" + filepath.ToSlash(relative), nil
 }
