@@ -47,18 +47,40 @@ func (p *Preparer) destinationRoot(target string) (*os.Root, error) {
 // UpdateLocked はmulti-repository全体でslot lockを保持する呼び出し元向けの更新処理である。
 // 区間名に update- 接頭辞を付けるのは、cold startの同名区間と合算されないようにするためである。
 func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, target, oldOID, newOID, slotID string, previous, desired []state.Placement) ([]state.Placement, error) {
-	identity, err := p.WorktreeIdentity(target)
+	stage, err := p.UpdateCheckoutLocked(ctx, repo, target, oldOID, newOID, slotID, previous, desired)
 	if err != nil {
 		return nil, err
+	}
+	return p.UpdateFinishLocked(ctx, repo, target, oldOID, newOID, slotID, previous, stage)
+}
+
+// StandbyUpdateStage は更新の前半を終えたrepository 1件の状態で、後半へそのまま渡す。
+type StandbyUpdateStage struct {
+	identity string
+	desired  []state.Placement
+}
+
+// Placements は前半で実際に置いた配置で、更新先OIDのignore規則で見送ったlinkを含まない。
+func (s StandbyUpdateStage) Placements() []state.Placement {
+	return s.desired
+}
+
+// UpdateCheckoutLocked は更新の前半で、旧HEADの検証から要求OIDへのcheckoutと配置までを行う。
+// 前半を終えたworktreeはエージェントの起動に必要なfileが揃っており、呼び出し側はここでEarly Readyを出してよい。
+// prepare commandの再実行・CoW・最終の検証はUpdateFinishLockedが行う。
+func (p *Preparer) UpdateCheckoutLocked(ctx context.Context, repo discovery.Repository, target, oldOID, newOID, slotID string, previous, desired []state.Placement) (StandbyUpdateStage, error) {
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		return StandbyUpdateStage{}, err
 	}
 	if err := p.timePhase("update-validate", func() error {
 		return p.validateUpdating(ctx, repo, target, oldOID, slotID, identity)
 	}); err != nil {
-		return nil, err
+		return StandbyUpdateStage{}, err
 	}
 	destination, err := p.destinationRoot(target)
 	if err != nil {
-		return nil, err
+		return StandbyUpdateStage{}, err
 	}
 	defer func() { _ = destination.Close() }()
 	if err := p.timePhase("update-place", func() error {
@@ -67,12 +89,12 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 		}
 		return removeChangedPlacements(destination, previous, desired)
 	}); err != nil {
-		return nil, err
+		return StandbyUpdateStage{}, err
 	}
 	if err := p.timePhase("update-checkout", func() error {
 		return p.checkoutUpdate(ctx, repo, target, identity, oldOID, newOID, destination)
 	}); err != nil {
-		return nil, err
+		return StandbyUpdateStage{}, err
 	}
 	retainedPrevious := unchangedPlacements(previous, desired)
 	if err := p.timePhase("update-place", func() error {
@@ -85,8 +107,15 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 		}
 		return materializeChangedPlacements(destination, previous, desired)
 	}); err != nil {
-		return nil, err
+		return StandbyUpdateStage{}, err
 	}
+	return StandbyUpdateStage{identity: identity, desired: desired}, nil
+}
+
+// UpdateFinishLocked は更新の後半で、入力の変わったprepare commandの再実行・CoW・最終の検証を行う。
+// Early Readyの後に走っても、エージェントは最初のプロンプトでFull Readyを待つため、作業と重ならない。
+func (p *Preparer) UpdateFinishLocked(ctx context.Context, repo discovery.Repository, target, oldOID, newOID, slotID string, previous []state.Placement, stage StandbyUpdateStage) ([]state.Placement, error) {
+	identity, desired := stage.identity, stage.desired
 	changedInputs, err := p.prepareInputChanges(ctx, repo, oldOID, newOID, previous, desired)
 	if err != nil {
 		return nil, err
