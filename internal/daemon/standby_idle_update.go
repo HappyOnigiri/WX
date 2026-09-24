@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
@@ -71,7 +72,7 @@ func (m *Manager) startIdleStandbyUpdate(ctx context.Context, w discovery.Worksp
 		return false, err
 	}
 	defer releaseRoot()
-	plan, err := m.planStandbyUpdate(ctx, w, slot, resolved)
+	plan, err := m.planStandbyUpdate(ctx, w, slot, resolved, nil)
 	if err != nil {
 		return false, err
 	}
@@ -83,7 +84,7 @@ func (m *Manager) startIdleStandbyUpdate(ctx context.Context, w discovery.Worksp
 		return false, err
 	}
 	m.markIdleStandbyRefresh(string(w.ID))
-	m.log.Info("standby idle update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, plan.mismatch.logArgs()...)...)
+	m.log.Info("standby idle update reserved", slices.Concat([]any{"workspace_id", w.ID, "slot_id", slot.ID}, plan.mismatch.logArgs(), plan.timingLogArgs())...)
 	m.schedule(job)
 	return true, nil
 }

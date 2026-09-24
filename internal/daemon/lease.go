@@ -279,8 +279,9 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 			return lease, nil
 		}
 	}
+	inputs := standbyUpdateInputCache{}
 	for _, candidate := range candidates {
-		lease, updated, updateErr := m.leaseUpdatingStandby(ctx, w, candidate, resolved, agent, pid, attrs)
+		lease, updated, updateErr := m.leaseUpdatingStandby(ctx, w, candidate, resolved, agent, pid, attrs, inputs)
 		if updateErr != nil {
 			switch {
 			case errors.Is(updateErr, state.ErrOwnership) && !errors.Is(updateErr, state.ErrSlotStateIneligible):

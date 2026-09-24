@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -51,55 +50,53 @@ func indexFlagsOf(entries []flaggedUpdatePath) IndexFlags {
 // force checkoutが更新できないのはこの集合だけなので、解除と復元の対象もここに限る。
 // flagを読めないまま進むと個人設定を壊すため、読み取りの失敗はそのまま返してfail-closedにする。
 func (p *Preparer) flaggedUpdatePaths(ctx context.Context, repo discovery.Repository, target, identity, oldOID, newOID string) ([]string, IndexFlags, error) {
+	flags, err := p.readWorktreeIndexFlags(ctx, target, identity)
+	if err != nil || !flags.Blinding() {
+		return nil, flags, err
+	}
+	diff, err := p.readUpdateTreeDiff(ctx, repo, oldOID, newOID)
+	if err != nil {
+		return nil, IndexFlags{}, err
+	}
+	return flaggedPathsInDiff(flags, diff), flags, nil
+}
+
+func (p *Preparer) readWorktreeIndexFlags(ctx context.Context, target, identity string) (IndexFlags, error) {
 	value, _ := p.worktreeIndexGit(ctx, target, identity)
-	flags, err := ReadIndexFlags(value, nil)
-	if err != nil {
-		return nil, IndexFlags{}, err
-	}
-	if !flags.Blinding() {
-		return nil, flags, nil
-	}
-	// rename検出は旧名を落として集合を狭めるため切る。updateCOWScopeと同じく多めに見積もる側へ倒す。
-	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "--no-renames", "-z", oldOID, newOID)
-	if err != nil {
-		return nil, IndexFlags{}, err
-	}
-	changed := map[string]bool{}
-	for _, name := range strings.Split(diff.Stdout, "\x00") {
-		if name != "" {
-			changed[name] = true
-		}
-	}
+	return ReadIndexFlags(value, nil)
+}
+
+func flaggedPathsInDiff(flags IndexFlags, diff updateTreeDiff) []string {
 	var paths []string
 	for _, path := range flags.FlaggedPaths {
-		if changed[path] {
+		if _, changed := diff.newModes[path]; changed {
 			paths = append(paths, path)
 		}
 	}
-	return paths, flags, nil
+	return paths
 }
 
 // rejectUnrestorableFlaggedPaths は、解除しても元へ戻せないflag付きpathが差分に乗る更新を不適格として扱う。
 // 新OIDで消えるpathとmodeが通常file以外へ変わるpathはflagを張り直す先が無く、退避内容を書き戻すと残骸になる。
 // 退避はメモリに持つため、件数と合計サイズの上限も同じく書込み前に判定する。
-func (p *Preparer) rejectUnrestorableFlaggedPaths(ctx context.Context, repo discovery.Repository, target, identity, oldOID, newOID string, root *os.Root) error {
-	paths, _, err := p.flaggedUpdatePaths(ctx, repo, target, identity, oldOID, newOID)
+func (p *Preparer) rejectUnrestorableFlaggedPaths(ctx context.Context, target, identity string, diff updateTreeDiff, root *os.Root) error {
+	flags, err := p.readWorktreeIndexFlags(ctx, target, identity)
 	if err != nil {
 		return err
 	}
+	if !flags.Blinding() {
+		return nil
+	}
+	paths := flaggedPathsInDiff(flags, diff)
 	if len(paths) == 0 {
 		return nil
 	}
 	if len(paths) > maxFlaggedUpdatePaths {
 		return fmt.Errorf("%w: %d index-flagged paths in the diff exceed the update limit of %d", ErrUpdateIneligible, len(paths), maxFlaggedUpdatePaths)
 	}
-	regular, err := p.regularTreeFiles(ctx, repo, newOID)
-	if err != nil {
-		return err
-	}
 	total := int64(0)
 	for _, path := range paths {
-		if !regular[path] {
+		if mode := diff.newModes[path]; mode != "100644" && mode != "100755" {
 			return fmt.Errorf("%w: index flag on %s cannot be reinstated because the requested OID has no regular file there", ErrUpdateIneligible, path)
 		}
 		info, err := root.Lstat(filepath.FromSlash(path))
@@ -115,24 +112,6 @@ func (p *Preparer) rejectUnrestorableFlaggedPaths(ctx context.Context, repo disc
 		}
 	}
 	return nil
-}
-
-// regularTreeFiles は指定OIDのtreeで通常fileとして存在するpathを返す。
-// pathspecを渡さないのは、index上のpathをそのまま渡すとpathspec magicとして解釈され得るためである。
-func (p *Preparer) regularTreeFiles(ctx context.Context, repo discovery.Repository, oid string) (map[string]bool, error) {
-	result, err := p.Git.Run(ctx, string(repo.MainPath), "ls-tree", "-r", "-z", "--format=%(objectmode) %(path)", oid)
-	if err != nil {
-		return nil, err
-	}
-	files := map[string]bool{}
-	for _, entry := range strings.Split(result.Stdout, "\x00") {
-		mode, path, ok := strings.Cut(entry, " ")
-		if !ok || (mode != "100644" && mode != "100755") {
-			continue
-		}
-		files[path] = true
-	}
-	return files, nil
 }
 
 // checkoutUpdate はstandbyを要求OIDへ切り替える。

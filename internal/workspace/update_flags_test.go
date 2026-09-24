@@ -63,7 +63,7 @@ func TestUpdateKeepsFlaggedPathsWhenTheHookReinstatesThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	newOID := commitConf(t, main, "repo2\n")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, newOID, nil, nil); err != nil {
 		t.Fatalf("an update over a hook-flagged path must stay eligible: %v", err)
 	}
 	if _, err := p.UpdateLocked(ctx, repo, target, baseOID, newOID, testSlotID, nil, nil); err != nil {
@@ -204,7 +204,7 @@ func TestValidateUpdateCandidateAcceptsExactFlaggedPathLimits(t *testing.T) {
 	cowGit(t, main, "add", "flagged")
 	cowGit(t, main, "commit", "-m", "update boundary-sized flagged files")
 	newOID := cowGit(t, main, "rev-parse", "HEAD")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, newOID, nil, nil); err != nil {
 		t.Fatalf("exact flag limits must stay eligible: %v", err)
 	}
 }

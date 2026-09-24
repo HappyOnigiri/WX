@@ -376,7 +376,7 @@ func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T)
 	gitCommand(t, f.repository, "add", "tracked")
 	gitCommand(t, f.repository, "commit", "-m", "unrelated change")
 	sameGitlink := gitOutput(t, f.repository, "rev-parse", "HEAD")
-	if err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, f.head, sameGitlink, nil, nil); err != nil {
+	if err := validateCollisionCandidate(ctx, f.preparer, f.repo, f.target, f.head, sameGitlink, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.preparer.UpdateLocked(ctx, f.repo, f.target, f.head, sameGitlink, testSlotID, nil, nil); err != nil {
@@ -396,7 +396,7 @@ func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T)
 	gitCommand(t, f.repository, "update-index", "--cacheinfo", "160000,"+ahead+",sub/kid")
 	gitCommand(t, f.repository, "commit", "-m", "advance gitlink")
 	changedGitlink := gitOutput(t, f.repository, "rev-parse", "HEAD")
-	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, sameGitlink, changedGitlink, nil, nil)
+	err := validateCollisionCandidate(ctx, f.preparer, f.repo, f.target, sameGitlink, changedGitlink, nil, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
 		t.Fatalf("changed gitlink update error=%v, want ErrUpdateIneligible", err)
 	}
@@ -484,35 +484,36 @@ func TestValidateUpdatingPropagatesTrackedCleanError(t *testing.T) {
 	}
 }
 
-// Git tree の通常 file は mode 100644 と 100755 の両方を更新可能な path として扱う。
-// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
-func TestRegularTreeFilesIncludesBothRegularModes(t *testing.T) {
+// flag 付き path の新しい mode が 100644 と 100755 のどちらでも flag を張り直せるが、symlink へ変わる更新は弾く。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdateCandidateReinstatesFlagsOnlyOnRegularModes(t *testing.T) {
 	ctx := context.Background()
-	f := newSubmoduleFixture(t)
-	main := f.repository
-	if err := os.WriteFile(filepath.Join(main, "regular"), []byte("regular\n"), 0o644); err != nil {
+	p, repo, baseOID, target := cowFixture(t)
+	main := string(repo.MainPath)
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(main, "executable"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	cowGit(t, target, "update-index", "--skip-worktree", "file")
+	if err := os.Chmod(filepath.Join(main, "file"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("regular", filepath.Join(main, "symbolic")); err != nil {
+	cowGit(t, main, "commit", "-q", "-am", "make the flagged file executable")
+	executableOID := cowGit(t, main, "rev-parse", "HEAD")
+	if err := validateCollisionCandidate(ctx, p, repo, target, baseOID, executableOID, nil, nil); err != nil {
+		t.Fatalf("executable mode must stay restorable: %v", err)
+	}
+	if err := os.Remove(filepath.Join(main, "file")); err != nil {
 		t.Fatal(err)
 	}
-	gitCommand(t, main, "add", ".")
-	gitCommand(t, main, "commit", "-m", "add regular tree modes")
-	oid := gitOutput(t, main, "rev-parse", "HEAD")
-	files, err := f.preparer.regularTreeFiles(ctx, f.repo, oid)
-	if err != nil {
+	if err := os.Symlink("elsewhere", filepath.Join(main, "file")); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"regular", "executable"} {
-		if !files[path] {
-			t.Fatalf("regularTreeFiles missing %q: %v", path, files)
-		}
-	}
-	if files["symbolic"] {
-		t.Fatalf("regularTreeFiles included symbolic link: %v", files)
+	cowGit(t, main, "add", "file")
+	cowGit(t, main, "commit", "-q", "-m", "turn the flagged file into a symlink")
+	symlinkOID := cowGit(t, main, "rev-parse", "HEAD")
+	err := validateCollisionCandidate(ctx, p, repo, target, baseOID, symlinkOID, nil, nil)
+	if !errors.Is(err, ErrUpdateIneligible) || !strings.Contains(err.Error(), "no regular file") {
+		t.Fatalf("symlink at the flagged path: error=%v, want ErrUpdateIneligible", err)
 	}
 }
 
