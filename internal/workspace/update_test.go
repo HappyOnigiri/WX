@@ -560,12 +560,19 @@ func TestUpdateLimitsCOWCompactionToRewrittenPaths(t *testing.T) {
 	cowGit(t, main, "add", ".")
 	cowGit(t, main, "commit", "-m", "rewrite one tracked file")
 	newOID := cowGit(t, main, "rev-parse", "HEAD")
-	scope, err := p.updateCOWScope(ctx, repo, baseOID, newOID, nil, nil)
+	scope, err := p.updateCOWScope(ctx, repo, baseOID, newOID, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(scope.rewritten) != 1 || !scope.rewritten["changed"] {
 		t.Fatalf("scope=%v, want only the rewritten path", scope.rewritten)
+	}
+	if !scope.scopedLeftovers {
+		t.Fatal("an update without a prepare rerun searched leftovers across the whole worktree")
+	}
+	// prepare command は集合の外にも一時ファイル名を作り得るため、再実行した回は全体の探索へ戻す。
+	if rerun, err := p.updateCOWScope(ctx, repo, baseOID, newOID, nil, nil, true); err != nil || rerun.scopedLeftovers {
+		t.Fatalf("rerun scope limited leftovers=%v err=%v, want the whole-worktree search", rerun != nil && rerun.scopedLeftovers, err)
 	}
 	before := updateTestInode(t, filepath.Join(target, "kept"))
 	p.Phases = &PhaseTimings{}
@@ -621,5 +628,82 @@ func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 	}
 	if after := updateTestInode(t, filepath.Join(target, "file")); after != before {
 		t.Fatalf("a shared file went through the replacement path again: %d -> %d", before, after)
+	}
+}
+
+// 共有しない更新は CoW の直前の検証を省き、prepare command を再実行した回だけ完全な検証を残す。
+// 省いた検証は最終の検証と同じ内容で、再実行した回は prepare command の汚れを共有の前に止める必要がある。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestUpdateValidatesBeforeCOWOnlyWhenNeeded(t *testing.T) {
+	ctx := context.Background()
+	p, repo, baseOID, target := cowFixture(t)
+	main := string(repo.MainPath)
+	p.Config.Storage.CopyMode = config.CopyModeCopy
+	p.Config.Repositories = map[string]config.Repository{
+		main: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "true"}, Inputs: []string{"config"}}},
+	}
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(main, "unrelated"), "changed\n")
+	cowGit(t, main, "add", "unrelated")
+	cowGit(t, main, "commit", "-m", "change unrelated input")
+	unrelatedOID := cowGit(t, main, "rev-parse", "HEAD")
+	p.Phases = &PhaseTimings{}
+	if _, err := p.UpdateLocked(ctx, repo, target, baseOID, unrelatedOID, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatePhaseCounts(p.Phases)["update-validate"]; got != 2 {
+		t.Fatalf("update-validate=%d without compaction, want the first and final validations only", got)
+	}
+	writeTestFile(t, filepath.Join(main, "config", "db.yml"), "v2\n")
+	cowGit(t, main, "add", "config/db.yml")
+	cowGit(t, main, "commit", "-m", "change declared input")
+	inputOID := cowGit(t, main, "rev-parse", "HEAD")
+	p.Phases = &PhaseTimings{}
+	if _, err := p.UpdateLocked(ctx, repo, target, unrelatedOID, inputOID, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatePhaseCounts(p.Phases)["update-validate"]; got != 3 {
+		t.Fatalf("update-validate=%d after a prepare rerun, want the validation before CoW kept", got)
+	}
+}
+
+// 更新の残骸の探索は共有の候補を含むディレクトリに限り、そこへ残った一時ファイルは所有権不明として止める。
+// 同名の tracked file は生成物ではないので残骸として扱わない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestScopedCOWLeftoverSearchCoversCandidateDirectories(t *testing.T) {
+	ctx := context.Background()
+	p, repo, _, target := cowFixture(t)
+	main := string(repo.MainPath)
+	writeTestFile(t, filepath.Join(main, "dir", "changed"), cowBody+"changed\n")
+	writeTestFile(t, filepath.Join(main, "other", "kept"), cowBody+"kept\n")
+	writeTestFile(t, filepath.Join(main, cowTemporaryPrefix+"tracked"), cowBody+"tracked\n")
+	cowGit(t, main, "add", ".")
+	cowGit(t, main, "commit", "-m", "candidates")
+	oid := cowGit(t, main, "rev-parse", "HEAD")
+	p.Config.Storage.CopyMode = config.CopyModeCopy
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := &cowScope{rewritten: map[string]bool{"dir/changed": true, cowTemporaryPrefix + "tracked": true}, scopedLeftovers: true}
+	writeTestFile(t, filepath.Join(target, "other", cowTemporaryPrefix+"stray"), "outside\n")
+	if err := p.compactOwnedWorktree(ctx, repo, target, oid, testSlotID, preparePhaseUpdate, identity, scoped); errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("leftover outside the candidate directories or a tracked name stopped the update: %v", err)
+	}
+	whole := &cowScope{rewritten: scoped.rewritten}
+	if err := p.compactOwnedWorktree(ctx, repo, target, oid, testSlotID, preparePhaseUpdate, identity, whole); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("whole-worktree search error=%v, want state.ErrOwnership", err)
+	}
+	writeTestFile(t, filepath.Join(target, "dir", cowTemporaryPrefix+"stray"), "inside\n")
+	if err := p.compactOwnedWorktree(ctx, repo, target, oid, testSlotID, preparePhaseUpdate, identity, scoped); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("leftover in a candidate directory error=%v, want state.ErrOwnership", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "dir", cowTemporaryPrefix+"stray")); err != nil || string(data) != "inside\n" {
+		t.Fatalf("leftover was not retained: %q %v", data, err)
 	}
 }

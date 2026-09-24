@@ -103,13 +103,24 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 			return nil, err
 		}
 	}
-	if err := p.timePhase("update-validate", func() error {
-		return p.validateUpdating(ctx, repo, target, newOID, slotID, identity)
-	}); err != nil {
-		return nil, err
+	// CoWの直前の検証は、共有しない回は最終の検証と完全に重なるので省く。
+	// 共有する回はcompactionの事前検証がtracked clean以外を重ねて確かめるが、
+	// tracked cleanは最終の検証が共有後に確かめるので、ここでは所有権だけを見る。
+	// prepare commandを再実行した回だけは、その汚れを共有の前に止めるため完全な検証を残す。
+	// commentlint:allow-long -- 3通りの省略の根拠はどれも検証を削る判断の安全性に要る
+	rerunPrepare := len(changedInputs) > 0
+	if rerunPrepare || p.compactsWorktree(repo) {
+		if err := p.timePhase("update-validate", func() error {
+			if rerunPrepare {
+				return p.validateUpdating(ctx, repo, target, newOID, slotID, identity)
+			}
+			return p.validateUpdatingOwnership(ctx, repo, target, newOID, slotID, identity)
+		}); err != nil {
+			return nil, err
+		}
 	}
 	if err := p.timePhase("update-cow", func() error {
-		scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired)
+		scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired, rerunPrepare)
 		if err != nil {
 			return err
 		}
@@ -130,7 +141,8 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 // 集合の外は前回の準備が残した実体のままなので、候補から外しても宛先のbytesは変わらず、共有済みなら共有が続く。
 // 逆に前回共有できなかったpathを更新で共有し直すことは諦める。共有の水準は準備時に決まり、更新では増えない。
 // commentlint:allow-long -- 候補限定の根拠（bytesが変わらないこと）と代償（共有が増えないこと）はどちらも保守に要る
-func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository, oldOID, newOID string, previous, desired []state.Placement) (*cowScope, error) {
+// rerunPrepareはprepare commandを再実行したかで、再実行した回は集合の外にも一時ファイル名が作られ得るため、残骸の探索を全体へ戻す。
+func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository, oldOID, newOID string, previous, desired []state.Placement, rerunPrepare bool) (*cowScope, error) {
 	// rename検出は報告を減らす方向にしか働かない（旧名が落ちる）ため切る。集合は多めに見積もる側へ倒す。
 	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "--no-renames", "-z", oldOID, newOID)
 	if err != nil {
@@ -148,7 +160,7 @@ func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository
 			rewritten[filepath.Clean(placement.RelativePath)] = true
 		}
 	}
-	return &cowScope{rewritten: rewritten}, nil
+	return &cowScope{rewritten: rewritten, scopedLeftovers: !rerunPrepare}, nil
 }
 
 func unchangedPlacements(previous, desired []state.Placement) []state.Placement {
@@ -189,20 +201,19 @@ func (p *Preparer) filterUpdateLinks(ctx context.Context, root *os.Root, desired
 }
 
 func (p *Preparer) validateUpdating(ctx context.Context, repo discovery.Repository, target, oid, slotID, identity string) error {
+	if err := p.validateUpdatingOwnership(ctx, repo, target, oid, slotID, identity); err != nil {
+		return err
+	}
+	return p.validateTrackedClean(ctx, target)
+}
+
+// validateUpdatingOwnership は更新中のworktreeの所有権と、HEADが要求OIDのdetachedであることを確かめる。
+// detachedの確認はvalidateExistingWorktreeが`symbolic-ref`で行うので、ここで重ねない。
+func (p *Preparer) validateUpdatingOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID, identity string) error {
 	if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
 		return err
 	}
-	if err := p.validateStateOwnershipWithIdentity(ctx, repo, target, slotID, identity, []string{"PREPARING"}, []string{"UPDATE_RUNNING"}); err != nil {
-		return err
-	}
-	if err := p.validateTrackedClean(ctx, target); err != nil {
-		return err
-	}
-	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "symbolic-ref", "-q", "HEAD")
-	if err == nil || strings.TrimSpace(result.Stdout) != "" {
-		return errors.New("updated worktree is not detached")
-	}
-	return nil
+	return p.validateStateOwnershipWithIdentity(ctx, repo, target, slotID, identity, []string{"PREPARING"}, []string{"UPDATE_RUNNING"})
 }
 
 func validateRecordedPlacements(root *os.Root, placements []state.Placement) error {

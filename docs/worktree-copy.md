@@ -55,6 +55,9 @@ metadata（所有者・mode・flags・ACL・xattr）の不一致、mainのtree�
 集合は旧OIDと要求OIDの差分に、`slot_placements`の旧履歴と新計画に挙がったpathを足したものである。
 したがって共有の水準は準備時に決まり、更新では増えない。前回共有できなかったpathをmainの状態が変わってから拾い直すことはしない。
 復元と新規準備は限定しない。宛先に共有済みの実体が無いため、絞ると共有が減るだけになる。
+UPDATEは中断した置換の`.wx-cow-*`の探索も、候補を含むディレクトリの読み取りに限る。
+更新の中断・失敗は隔離になるので、READYから始まる更新で残り得るのは前回の準備の残骸だけで、置換が触るのは候補のディレクトリだけだからである。
+`prepare.command`を再実行した更新だけは、commandが集合の外にもその名前を作り得るため、全体の探索に戻す。
 
 置換は復元の完了前に行い、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
@@ -83,6 +86,8 @@ os/execに出力用のWriterを渡すと、継承したpipeを保持する子孫
 猶予内に回収し切れなかった出力は切り詰めとして記録し、返却を待たせない。
 
 Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから、要求時に固定したOIDへdetachedのまま切り替える。
+切替後のtracked cleanは置換の後の最終検証で1回だけ確かめ、置換の直前は所有権だけを見る（置換しない回は直前の検証自体を省く）。
+置換の前後で同じ検査を重ねても、書込みを挟まない区間では結果が変わらないためである。`prepare.command`を再実行した回だけは、その汚れを置換の前に止めるため直前にも確かめる。
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
 `.gitattributes`の差、submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
 `.gitattributes`を除外するのは、`checkout-index`が内容の同じfileをstat cacheの一致で書き直さず、属性だけ変わったfileが旧属性のまま残るためである。
