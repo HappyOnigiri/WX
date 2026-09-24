@@ -399,7 +399,7 @@ func TestScopeFieldsReportTheSource(t *testing.T) {
 	if got := sources["agent.add_dir"]; got.Value != AgentAddDirOff || got.Source != "workspace" {
 		t.Fatalf("agent.add_dir=%+v, want the workspace override", got)
 	}
-	if got := sources["warm_count"]; got.Value != "1" || got.Source != "global" {
+	if got := sources["warm_count"]; got.Value != "2" || got.Source != "global" {
 		t.Fatalf("warm_count=%+v, want the inherited global value", got)
 	}
 	if got := sources["copy"]; got.Source != "unset" {

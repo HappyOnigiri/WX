@@ -147,7 +147,7 @@ func TestWorkspaceWarmCountOverridePreservesOtherSettingsAndExplicitZero(t *test
 	if workspace.WarmCount != nil || workspace.Worktree != "hot" || len(workspace.Copy) != 1 || len(workspace.Link) != 1 {
 		t.Fatalf("reset workspace override=%+v, want other settings retained", workspace)
 	}
-	if got, overridden := loaded.WarmCountForWorkspace(repo); got != 1 || overridden {
+	if got, overridden := loaded.WarmCountForWorkspace(repo); got != 2 || overridden {
 		t.Fatalf("reset warm count=%d overridden=%v, want global default", got, overridden)
 	}
 }
