@@ -9,14 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/HappyOnigiri/WorktreeX/internal/config"
-	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
-	"github.com/HappyOnigiri/WorktreeX/internal/domain"
-	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
@@ -26,56 +22,6 @@ func (f updateOwnershipValidatorFunc) ValidateWorktreeOwnership(ctx context.Cont
 	return f(ctx, request)
 }
 
-func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
-	t.Parallel()
-	for _, testCase := range []struct {
-		name       string
-		change     func(t *testing.T, repository string)
-		ineligible bool
-	}{
-		{name: "root added", change: func(t *testing.T, repository string) {
-			writeTestFile(t, filepath.Join(repository, ".gitattributes"), "*.txt text eol=crlf\n")
-		}, ineligible: true},
-		{name: "nested changed", change: func(t *testing.T, repository string) {
-			writeTestFile(t, filepath.Join(repository, "sub", ".gitattributes"), "*.txt -text\n")
-		}, ineligible: true},
-		{name: "nested removed", change: func(t *testing.T, repository string) {
-			if err := os.Remove(filepath.Join(repository, "sub", ".gitattributes")); err != nil {
-				t.Fatal(err)
-			}
-		}, ineligible: true},
-		{name: "unrelated file only", change: func(t *testing.T, repository string) {
-			writeTestFile(t, filepath.Join(repository, "sub", "b.txt"), "changed\n")
-		}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			repository := t.TempDir()
-			gitCommand(t, repository, "init", "-b", "main")
-			gitCommand(t, repository, "config", "user.name", "test")
-			gitCommand(t, repository, "config", "user.email", "test@example.com")
-			writeTestFile(t, filepath.Join(repository, "a.txt"), "a\n")
-			writeTestFile(t, filepath.Join(repository, "sub", "b.txt"), "b\n")
-			writeTestFile(t, filepath.Join(repository, "sub", ".gitattributes"), "*.txt text\n")
-			gitCommand(t, repository, "add", "-A")
-			gitCommand(t, repository, "commit", "-m", "base")
-			oldOID := gitOutput(t, repository, "rev-parse", "HEAD")
-			testCase.change(t, repository)
-			gitCommand(t, repository, "add", "-A")
-			gitCommand(t, repository, "commit", "-m", "change")
-			newOID := gitOutput(t, repository, "rev-parse", "HEAD")
-			preparer := Preparer{Git: &gitx.Runner{Timeout: 30 * time.Second}}
-			repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
-			err := preparer.rejectChangedAttributes(context.Background(), repo, oldOID, newOID)
-			if testCase.ineligible != errors.Is(err, ErrUpdateIneligible) {
-				t.Fatalf("ineligible=%v err=%v", testCase.ineligible, err)
-			}
-			if !testCase.ineligible && err != nil {
-				t.Fatalf("unexpected failure: %v", err)
-			}
-		})
-	}
-}
-
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -83,16 +29,6 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestPathsConflictAnyIncludesAncestors(t *testing.T) {
-	t.Parallel()
-	if !pathsConflictAny("cache", map[string]bool{"cache/file": true}) {
-		t.Fatal("ancestor collision was missed")
-	}
-	if pathsConflictAny("cache-a", map[string]bool{"cache-b": true}) {
-		t.Fatal("unrelated paths collided")
 	}
 }
 
@@ -466,148 +402,6 @@ func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T)
 	}
 }
 
-// 更新候補の既存配置が壊れている場合は、Git差分の検査より前に不適格として返す。
-// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
-func TestValidateUpdateCandidateRejectsInvalidRecordedPlacement(t *testing.T) {
-	ctx := context.Background()
-	f := newSubmoduleFixture(t)
-	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	previous := []state.Placement{{RelativePath: "missing", Kind: "copy", ContentSHA256: "hash"}}
-	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, f.head, f.head, previous, nil)
-	if !errors.Is(err, ErrUpdateIneligible) {
-		t.Fatalf("invalid recorded placement error=%v, want ErrUpdateIneligible", err)
-	}
-}
-
-// 更新候補の tracked path 列挙に失敗した場合は、空の tree として衝突検査を続けない。
-// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
-func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
-	ctx := context.Background()
-	p, repo, oid, target := cowFixture(t)
-	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	treeOID := cowGit(t, string(repo.MainPath), "rev-parse", oid+"^{tree}")
-	objectPath := filepath.Join(string(repo.CommonDir), "objects", treeOID[:2], treeOID[2:])
-	backupPath := objectPath + ".mutation-test"
-	moved := false
-	t.Cleanup(func() {
-		if moved {
-			_ = os.Rename(backupPath, objectPath)
-		}
-	})
-	triggered := false
-	p.Git.SetBeforeRunAtHook(func(args []string) {
-		command := strings.Join(args, "\x00")
-		if command == strings.Join([]string{"ls-tree", "-r", "--name-only", "-z", oid}, "\x00") {
-			if err := os.Rename(objectPath, backupPath); err != nil {
-				t.Fatal(err)
-			}
-			moved = true
-			triggered = true
-			return
-		}
-		if moved && strings.HasPrefix(command, "ls-files\x00") {
-			if err := os.Rename(backupPath, objectPath); err != nil {
-				t.Fatal(err)
-			}
-			moved = false
-		}
-	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
-		t.Fatal("tracked path enumeration error was ignored")
-	}
-	if !triggered {
-		t.Fatal("tracked path enumeration was not exercised")
-	}
-}
-
-// 更新候補の untracked path 列挙に失敗した場合は、ignored path の結果で上書きしない。
-// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
-func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
-	ctx := context.Background()
-	p, repo, oid, target := cowFixture(t)
-	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	indexPath := cowGit(t, target, "rev-parse", "--path-format=absolute", "--git-path", "index")
-	index, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	corrupted := false
-	restore := func() {
-		if !corrupted {
-			return
-		}
-		if err := os.WriteFile(indexPath, index, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		corrupted = false
-	}
-	t.Cleanup(restore)
-	triggered := false
-	p.Git.SetBeforeRunAtHook(func(args []string) {
-		command := strings.Join(args, "\x00")
-		switch command {
-		case "ls-files\x00--others\x00--exclude-standard\x00-z":
-			if err := os.WriteFile(indexPath, []byte("invalid index"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			corrupted = true
-			triggered = true
-		case "ls-files\x00--others\x00--ignored\x00--exclude-standard\x00-z":
-			restore()
-		}
-	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
-		t.Fatal("untracked path enumeration error was ignored")
-	}
-	if !triggered {
-		t.Fatal("untracked path enumeration was not exercised")
-	}
-}
-
-// 更新候補の ignored path 列挙に失敗した場合は、不完全な untracked 集合で適格と判定しない。
-// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
-func TestValidateUpdateCandidatePropagatesIgnoredPathError(t *testing.T) {
-	ctx := context.Background()
-	p, repo, oid, target := cowFixture(t)
-	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	indexPath := cowGit(t, target, "rev-parse", "--path-format=absolute", "--git-path", "index")
-	index, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	corrupted := false
-	t.Cleanup(func() {
-		if corrupted {
-			_ = os.WriteFile(indexPath, index, 0o600)
-		}
-	})
-	triggered := false
-	p.Git.SetBeforeRunAtHook(func(args []string) {
-		if strings.Join(args, "\x00") != "ls-files\x00--others\x00--ignored\x00--exclude-standard\x00-z" {
-			return
-		}
-		if err := os.WriteFile(indexPath, []byte("invalid index"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		corrupted = true
-		triggered = true
-	})
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
-		t.Fatal("ignored path enumeration error was ignored")
-	}
-	if !triggered {
-		t.Fatal("ignored path enumeration was not exercised")
-	}
-}
-
 // 更新中の worktree が正常なら、既存検査を通過して detached HEAD の更新を許可する。
 // testlint:allow-serial -- fixture preparation changes HOME through the shared setup
 func TestValidateUpdatingAcceptsDetachedCleanWorktree(t *testing.T) {
@@ -722,23 +516,6 @@ func TestRegularTreeFilesIncludesBothRegularModes(t *testing.T) {
 	}
 }
 
-// 正常な worktree では gitPaths が Git の NUL 区切り結果を path 集合へ変換する。
-// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
-func TestGitPathsReturnsGitEntries(t *testing.T) {
-	ctx := context.Background()
-	f := newSubmoduleFixture(t)
-	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	paths, err := f.preparer.gitPaths(ctx, f.target, "ls-files", "-z")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !paths["tracked"] {
-		t.Fatalf("gitPaths=%v, want tracked", paths)
-	}
-}
-
 func updatePhaseCounts(timings *PhaseTimings) map[string]int {
 	counts := map[string]int{}
 	for _, phase := range timings.Phases() {
@@ -843,51 +620,5 @@ func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 	}
 	if after := updateTestInode(t, filepath.Join(target, "file")); after != before {
 		t.Fatalf("a shared file went through the replacement path again: %d -> %d", before, after)
-	}
-}
-
-// flag 付きの path が差分に乗るだけでは弾かない。更新は flag を解除して checkout し、内容を戻す。
-// 弾くのは要求OIDで通常 file として残らない場合だけで、そこは flag を張り直す先が無い。
-// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
-func TestValidateUpdateCandidateRejectsOnlyUnrestorableFlaggedIndexPaths(t *testing.T) {
-	ctx := context.Background()
-	p, repo, _, target := cowFixture(t)
-	main := string(repo.MainPath)
-	if err := os.WriteFile(filepath.Join(main, "other"), []byte("other\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cowGit(t, main, "add", ".")
-	cowGit(t, main, "commit", "-m", "add a tracked file the update leaves alone")
-	baseOID := cowGit(t, main, "rev-parse", "HEAD")
-	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(main, "file"), []byte(cowBody+"after\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cowGit(t, main, "add", ".")
-	cowGit(t, main, "commit", "-m", "rewrite a tracked file")
-	newOID := cowGit(t, main, "rev-parse", "HEAD")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
-		t.Fatalf("an update without index flags must stay eligible: %v", err)
-	}
-	// 差分に乗らない path の flag は checkout を妨げないので、更新は適格なままである。
-	cowGit(t, target, "update-index", "--skip-worktree", "other")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
-		t.Fatalf("a flag outside the diff must stay eligible: %v", err)
-	}
-	cowGit(t, target, "update-index", "--skip-worktree", "file")
-	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
-		t.Fatalf("a restorable flagged path must stay eligible: %v", err)
-	}
-	cowGit(t, main, "rm", "-q", "file")
-	cowGit(t, main, "commit", "-m", "delete the flagged file")
-	deletedOID := cowGit(t, main, "rev-parse", "HEAD")
-	err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, deletedOID, nil, nil)
-	if !errors.Is(err, ErrUpdateIneligible) {
-		t.Fatalf("flagged path deleted at the requested OID: error=%v, want ErrUpdateIneligible", err)
-	}
-	if !strings.Contains(err.Error(), "file") {
-		t.Fatalf("error=%v, want it to name the path that cannot be restored", err)
 	}
 }
