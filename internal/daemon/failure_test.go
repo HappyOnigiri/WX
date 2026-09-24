@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 func TestGitFailureInfoUsesTheProcessingKindAndDetailPath(t *testing.T) {

@@ -1,9 +1,9 @@
-# wx
+# Worktree X
 
 English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 Run Claude Code or Codex in a separate Git worktree with a single command.
-`wx` prepares and manages workspaces on macOS, so you can hand off a task without switching branches in your source repository.
+Worktree X (`wx`) prepares and manages workspaces on macOS, so you can hand off a task without switching branches in your source repository.
 
 ## Features
 
@@ -17,7 +17,7 @@ Run Claude Code or Codex in a separate Git worktree with a single command.
 Requires **macOS on Apple Silicon**, **Git**, and **Claude Code or Codex**.
 
 ```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/HappyOnigiri/WorktreeX/releases/latest/download/install.sh | bash
 ```
 
 ## Quick start
@@ -59,7 +59,7 @@ See `wx --help` and `wx <command> --help` for commands and options.
 ## Uninstallation
 
 ```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
+curl -fsSL https://github.com/HappyOnigiri/WorktreeX/releases/latest/download/uninstall.sh | bash
 ```
 
 Removes wx-managed worktrees (including unsaved work), hook entries, the LaunchAgent, configuration files, and the executable.
@@ -67,5 +67,5 @@ Removes wx-managed worktrees (including unsaved work), hook entries, the LaunchA
 ## Contributing
 
 Contributions are welcome!
-Share bug reports and ideas through [Issues](https://github.com/HappyOnigiri/WX/issues), or send a [pull request](https://github.com/HappyOnigiri/WX/pulls).
+Share bug reports and ideas through [Issues](https://github.com/HappyOnigiri/WorktreeX/issues), or send a [pull request](https://github.com/HappyOnigiri/WorktreeX/pulls).
 Documentation improvements and translations are welcome too.

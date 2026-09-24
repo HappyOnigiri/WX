@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // ErrOwnership は所有権証明の失敗を示す。呼び出し元は filesystem artifact を残し、owner を推測せず reconciliation で quarantine するフェイルクローズ結果として扱う。

@@ -12,12 +12,12 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/launchd"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/setup"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // setupIsTerminal は差し替えられるよう変数にする。go test の stdin は端末ではないため、テストは判定だけを置き換える。

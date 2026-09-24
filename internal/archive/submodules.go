@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // 未保全の理由コード。子の作業の種別を表し、capsule を作る対象の判定と、保存できなかった子の記録に使う。

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 func TestJobQueueKeepsArrivalOrderPerClassAndDropsDuplicates(t *testing.T) {

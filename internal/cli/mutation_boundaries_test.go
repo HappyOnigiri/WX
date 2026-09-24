@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // discovery timeout が未設定でも、repository discovery の既定予算を維持する。

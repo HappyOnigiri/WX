@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // TestMutationSnapshotLFSObjectsFailuresAndDedup は diff、cat-file batch、pointer

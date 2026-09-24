@@ -11,11 +11,11 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // statusDisplayTimeout は Status/Doctor の制限時間。

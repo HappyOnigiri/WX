@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // TestMutationWorkspaceArchiveEntryKinds は workspace archive の tar entry が

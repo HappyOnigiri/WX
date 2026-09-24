@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // installGitFaultは、引数にpatternを含むgit呼び出しの指定回だけ失敗させ、それ以外は実gitを実行する。

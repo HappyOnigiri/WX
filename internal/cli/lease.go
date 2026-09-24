@@ -8,14 +8,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // agent_kind へ入れる貸出コマンドの種別。表示（wx slots の AGENT 列）と --resume の照合に使う。

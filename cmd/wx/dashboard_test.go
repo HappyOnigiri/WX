@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/dashboard"
+	"github.com/HappyOnigiri/WorktreeX/internal/dashboard"
 )
 
 func TestDashboardActionRejectsMissingTarget(t *testing.T) {

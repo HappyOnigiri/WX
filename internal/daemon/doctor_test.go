@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/pool"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/pool"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // doctorFindings は検査名が一致する finding を返す。

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // 進行中の予約はreconcileの回収対象から外す。隔離するとConfirmSlotCreationのCASが落ち、正常な起動が失敗するためである。

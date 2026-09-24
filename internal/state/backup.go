@@ -11,7 +11,7 @@ import (
 
 	sqlite "modernc.org/sqlite"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // backupStepPages は 1回の Backup.Step が複製する page 数である。

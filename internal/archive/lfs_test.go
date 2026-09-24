@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func TestSnapshotTreeDiffCursorProgress(t *testing.T) {

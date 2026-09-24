@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
 )
 
 // setupFixture は制御した HOME と PATH を用意し、launchctl も daemon も動かさずに Apply を通す。

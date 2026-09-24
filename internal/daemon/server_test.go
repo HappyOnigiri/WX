@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
 )
 
 func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {

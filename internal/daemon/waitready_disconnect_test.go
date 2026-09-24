@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // waitReadyParams は WaitReady の要求を組み立てる。

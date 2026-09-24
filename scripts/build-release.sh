@@ -16,7 +16,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 "$go_command" build -trimpath \
-  -ldflags "-s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$release_version -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=" \
+  -ldflags "-s -w -X github.com/HappyOnigiri/WorktreeX/internal/version.Version=$release_version -X github.com/HappyOnigiri/WorktreeX/internal/version.BuildMeta=" \
   -o "$scratch/wx-darwin-arm64" ./cmd/wx
 sed "s/@WX_RELEASE_VERSION@/$release_version/g" "$script_directory/install.sh" > "$scratch/install.sh"
 # uninstall.sh は何もダウンロードしないため、install.sh と違ってタグを埋め込まずそのまま配る。

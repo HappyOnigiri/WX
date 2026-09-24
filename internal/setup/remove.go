@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/hookconfig"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
 )
 
 // RemoveResult は 1 項目の削除結果である。Note は消した実体や控えの path のように、項目名から読み取れない事実だけを持つ。

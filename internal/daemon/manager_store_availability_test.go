@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {

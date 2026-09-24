@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path, expectedHead string) error {

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // removeRegisteredSlot は DB の登録範囲だけを削除する。inode・marker・HEAD は削除権限の条件にしない。

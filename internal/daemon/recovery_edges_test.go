@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // Readiness.Timeoutを20msに縮めた状態で終端エラーの即時返却を確かめるため、直列で実行する。

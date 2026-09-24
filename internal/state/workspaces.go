@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // ErrWorkspaceKindConflict は、同じ root path が別の workspace kind で登録済みであることを示す。

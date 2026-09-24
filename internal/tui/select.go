@@ -13,7 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 var ErrCancelled = errors.New("selection cancelled")

@@ -9,7 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 const codexTrustConfigMaxSize = 4 << 20

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func FuzzSnapshotMetadata(f *testing.F) {

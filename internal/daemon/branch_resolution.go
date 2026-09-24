@@ -3,8 +3,8 @@ package daemon
 import (
 	"context"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/pool"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/pool"
 )
 
 // resolveBranches は貸出・待機枠の実体に使う branch/OID を解決する。

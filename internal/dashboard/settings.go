@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
 )
 
 func (m model) setupItems() []setup.Step {

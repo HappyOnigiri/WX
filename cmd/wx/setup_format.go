@@ -8,8 +8,8 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
 )
 
 // setupColumns は wx setup の表の列と並びで、最後の DETAIL は行末なので幅を持たない。

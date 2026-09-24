@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 type WorktreeOptions struct {

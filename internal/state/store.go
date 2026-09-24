@@ -19,8 +19,8 @@ import (
 
 	sqlite "modernc.org/sqlite"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/migrations"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/migrations"
 )
 
 type Store struct {

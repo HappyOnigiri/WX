@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func (c *cowPlacer) placeFileContext(ctx context.Context, source, destination *os.File, directory, leaf string) (bool, error) {

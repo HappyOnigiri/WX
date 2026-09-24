@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 // terminationEnvelope は heartbeat と agent 登録の応答に載る終了要求である。

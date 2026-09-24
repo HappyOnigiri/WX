@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/pool"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/pool"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // submoduleSharingFindings は登録済み workspace の要求 OIDごとに、local module の共有条件を診断する。

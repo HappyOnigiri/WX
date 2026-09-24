@@ -4,7 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // legacyLeaseFixture は旧リリースが残した UNBOUND の回収を検証する fixture である。

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/update"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/update"
 )
 
 // updateApplyLogName は自動適用の子の出力を残すファイル名である。

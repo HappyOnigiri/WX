@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // cleanTerminationGrace は --all が使用中の session へ与える猶予である。

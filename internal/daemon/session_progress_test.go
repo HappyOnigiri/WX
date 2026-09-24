@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // Cold Start の間は実行中の区間名を返し、準備が終われば実行中の区間は残らない。

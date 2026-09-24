@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {

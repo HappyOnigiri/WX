@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
 )
 
 // inspectLeasedWorkspace は貸出中の slot を変更せずに検査する。

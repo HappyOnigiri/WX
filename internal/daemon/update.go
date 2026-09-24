@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/update"
+	"github.com/HappyOnigiri/WorktreeX/internal/update"
 )
 
 // updateCheckInterval は最新リリースを問い合わせる間隔である。

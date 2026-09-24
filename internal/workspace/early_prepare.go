@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // Preparation は一つの repository に配置する確定済み OID と slot 内の場所である。

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // localization.go は CLI の表示言語を 1 か所で決める。訳文は internal/i18n の

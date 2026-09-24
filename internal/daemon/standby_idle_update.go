@@ -5,10 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/pool"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/pool"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // idleStandbyRefreshCooldown は同じ workspace で idle 更新を始める最短間隔である。

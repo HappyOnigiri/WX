@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 func TestOpenLeaseDirectoryPinsAndValidatesRootIdentity(t *testing.T) {

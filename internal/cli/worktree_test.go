@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // selectMode は RunAgentWithPolicy と同じ順で workspace root を解決してから方針を決める。

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 func TestClientNewMutationBoundariesKeepRPCTimeouts(t *testing.T) {

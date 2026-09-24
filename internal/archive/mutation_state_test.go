@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // TestMutationRestoreGitStatePropagatesEachPhaseError は制御ファイルの消去後に

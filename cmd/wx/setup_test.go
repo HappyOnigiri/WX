@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/setup"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // setupCommandHome は HOME と PATH を制御し、launchctl も daemon も動かさない Options を返す。

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // --unmanaged は対象範囲が他の mode と重ならないので併用を受け付けない。

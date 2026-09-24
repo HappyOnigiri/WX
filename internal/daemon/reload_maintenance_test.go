@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // reloadFixture は設定ファイルを持つ manager を用意し、実効設定を daemon の現在値へ揃えた状態から始める。

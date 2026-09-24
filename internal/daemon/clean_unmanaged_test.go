@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
 )
 
 func unmanagedReplyTargets(t *testing.T, reply map[string]any) []unmanagedTarget {

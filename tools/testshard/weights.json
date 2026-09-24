@@ -1,7 +1,7 @@
 {
   "version": 1,
   "tests": {
-    "github.com/HappyOnigiri/WX/cmd/wx": {
+    "github.com/HappyOnigiri/WorktreeX/cmd/wx": {
       "TestBinaryHelpVersionAndMisuseContracts": 1.86,
       "TestCommandDispatchAgainstRPCBoundary": 3.34,
       "TestCommandDispatchRejectsMalformedAndUnavailableRequests": 0.01,
@@ -33,7 +33,7 @@
       "TestWaitForDaemonReplacementStopsWhenTheCallerCancels": 0.01,
       "TestWaitForDaemonReplacementUsesPingPIDWithoutSocketOutage": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/agent": {
+    "github.com/HappyOnigiri/WorktreeX/internal/agent": {
       "TestHookFailsClosedForMalformedEnvironmentAndPayload": 2.13,
       "TestHookLifecyclePayloadsAndReadinessGates": 0.01,
       "TestReadinessHookSurvivesADaemonThatIsStillRestarting": 0.3,
@@ -42,7 +42,7 @@
       "TestSessionStartHookAcceptsCompactionAfterStartup": 0.01,
       "TestSessionStartHookSendsVerifiedCodexForkParent": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/archive": {
+    "github.com/HappyOnigiri/WorktreeX/internal/archive": {
       "TestArchiveGitValueAndRestorePreconditions": 0.47,
       "TestArchiveRejectsUnownedAndMismatchedWorktrees": 0.87,
       "TestClassifyOrphanRefsSeparatesRefsThatKeepObjectsAlive": 0.39,
@@ -102,7 +102,7 @@
       "TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures": 0.03,
       "TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts": 0.02
     },
-    "github.com/HappyOnigiri/WX/internal/cli": {
+    "github.com/HappyOnigiri/WorktreeX/internal/cli": {
       "TestConfirmLinkedWorktreeBaseContinuesWithoutTerminal": 0.81,
       "TestDetectLinkedWorktreeBaseAcceptsSubdirectory": 0.87,
       "TestDetectLinkedWorktreeBaseIgnoresMainWorktree": 0.3,
@@ -174,7 +174,7 @@
       "TestUndefinedPolicyRefusesNoninteractiveInput": 0.03,
       "TestWorktreePolicyRejectsGitExecutionFailureBeforeDirectAgent": 0.1
     },
-    "github.com/HappyOnigiri/WX/internal/config": {
+    "github.com/HappyOnigiri/WorktreeX/internal/config": {
       "TestAgentAddDirConfigRoundTrip": 0.03,
       "TestCOWMinSizeConfigRoundTrip": 0.04,
       "TestCopyModeConfigRoundTrip": 0.02,
@@ -191,7 +191,7 @@
       "TestWorkspaceWarmCountOverridePreservesOtherSettingsAndExplicitZero": 0.02,
       "TestWorktreeSelectionPreservesSparseConfigAndCanonicalKey": 0.03
     },
-    "github.com/HappyOnigiri/WX/internal/daemon": {
+    "github.com/HappyOnigiri/WorktreeX/internal/daemon": {
       "TestANewRequestKeepsAClaimWhoseSignalWasDelivered": 0.02,
       "TestAPendingRestartIssuesAsSoonAsTheLastRequestEnds": 0.01,
       "TestARequestAfterADeliveredSignalIsRefusedAsAConflict": 0.01,
@@ -479,16 +479,16 @@
       "TestWorkspaceScopeUsesSlotRecordsUnlessTheEntryBecameAnotherRepository": 1.15,
       "TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot": 2.56
     },
-    "github.com/HappyOnigiri/WX/internal/dashboard": {
+    "github.com/HappyOnigiri/WorktreeX/internal/dashboard": {
       "TestConfigChoicesLimitCustomInputToOpenEndedKinds": 0.03
     },
-    "github.com/HappyOnigiri/WX/internal/diag": {
+    "github.com/HappyOnigiri/WorktreeX/internal/diag": {
       "TestDegradedFindingsExplainTheDatabaseAndItsRecovery": 0.01,
       "TestLocalFindingsReportAnInvalidConfiguration": 0.01,
       "TestLocalFindingsReportTheDaemonAndLeaveStoreChecksUnchecked": 0.01,
       "TestSharedFindingsCoverEveryLocalCheck": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/discovery": {
+    "github.com/HappyOnigiri/WorktreeX/internal/discovery": {
       "TestInspectRepositoryFailsClosedAtGitMetadataBoundaries": 1.04,
       "TestInspectRepositoryReadsOriginRemoteName": 0.27,
       "TestMultiRepositoryDiscoveryPropagatesTraversalContextAndRepositoryErrors": 1,
@@ -503,13 +503,13 @@
       "TestResolveRepositoryUsesMainWorktreeAndConfiguredBranch": 0.28,
       "TestWorkspaceIDsAreFreshShortIdentifiers": 0.28
     },
-    "github.com/HappyOnigiri/WX/internal/fdexec": {
+    "github.com/HappyOnigiri/WorktreeX/internal/fdexec": {
       "TestStartClosesDirectoryFDAfterFchdir": 0.02,
       "TestStartRejectsInvalidDescriptorAndCommandInputs": 0.01,
       "TestStartReportsMissingCommandFromTheChild": 0.01,
       "TestStartResolvesRelativeCommandInsideDescriptorDirectory": 1.33
     },
-    "github.com/HappyOnigiri/WX/internal/gitx": {
+    "github.com/HappyOnigiri/WorktreeX/internal/gitx": {
       "TestDetailPathMatchesWhereFailuresAreWritten": 0.01,
       "TestExplicitEnvOverridesSanitizedDenylistOnBothPaths": 0.51,
       "TestGitErrorRedactsStderrAndWritesOwnerOnlyDetail": 0.72,
@@ -529,7 +529,7 @@
       "TestRunnerCommonDirLockSharesOneKeyPerCommonDirectory": 0.05,
       "TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/hookconfig": {
+    "github.com/HappyOnigiri/WorktreeX/internal/hookconfig": {
       "TestAvailableEvaluatesFullReadinessContractPerAgent": 0.01,
       "TestCodexPolicyFindingsEvaluateLocalAndManagedPolicyFiles": 0.01,
       "TestCodexPolicyFindingsRecognizeConfigBoundaries": 0.01,
@@ -543,7 +543,7 @@
       "TestInstallWritesAcceptedEntriesAndIsIdempotent": 0.02,
       "TestRemovePrunesOnlyWXEntriesAtEveryLevel": 0.03
     },
-    "github.com/HappyOnigiri/WX/internal/launchd": {
+    "github.com/HappyOnigiri/WorktreeX/internal/launchd": {
       "TestKickstartReportsAnUninstalledService": 0.53,
       "TestLaunchctlFailuresAreReported": 1.07,
       "TestRenderInstallUninstallAndKickstart": 1.74,
@@ -551,14 +551,14 @@
       "TestStartReportsAnUninstalledService": 1.58,
       "TestUninstallRemovesPlistWhenServiceIsAlreadyMissing": 0.85
     },
-    "github.com/HappyOnigiri/WX/internal/pool": {
+    "github.com/HappyOnigiri/WorktreeX/internal/pool": {
       "TestResolveBranchesFailsClosedUnderACanceledContext": 0.36,
       "TestResolveBranchesFallbackAndOverride": 0.6,
       "TestResolveBranchesRejectsAmbiguousAndMissingSpecifications": 0.68,
       "TestResolveBranchesRejectsGlobalMissingBranchForAllRepositories": 0.74,
       "TestResolveBranchesRejectsGlobalMissingBranchForSingleRepository": 0.33
     },
-    "github.com/HappyOnigiri/WX/internal/rpc": {
+    "github.com/HappyOnigiri/WorktreeX/internal/rpc": {
       "TestClientBoundsConnectedPeerReadWithDefaultTimeout": 0.04,
       "TestClientServerRoundTripWithoutParentDeadline": 0.01,
       "TestConnectRetryBridgesADaemonThatIsNotListeningYet": 0.2,
@@ -579,19 +579,19 @@
       "TestServerReplacesOnlyAStaleUnixSocket": 0.01,
       "TestServerTellsTheHandlerWhenTheClientClosesTheConnection": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/sessions": {
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions": {
       "TestContinueReadsEachInvocationAndExcludesInUse": 0.05,
       "TestListKeepsOutOfScopeConversationsFlagged": 0.05,
       "TestSessionsAgreeBetweenColdAndWarmCache": 0.03,
       "TestSessionsWorkWithoutAUsableCache": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/sessions/metacache": {
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/metacache": {
       "TestCachePruneRemovesOnlyUnseenEntriesUnderRoot": 0.01,
       "TestCacheReusesOnlyFullyMatchingAttributes": 0.01,
       "TestNilCacheAndClosedCacheStayHarmless": 0.01,
       "TestOpenRecreatesCorruptedDatabaseAndReportsUnusablePath": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/sessions/scanner": {
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner": {
       "TestFindPrefersLatestDuplicateAndUsesCachedCodexIDs": 0.01,
       "TestScanDetectsSameSizeAndMtimeReplacement": 0.01,
       "TestScanFallsBackWhenCacheIsCorruptedOrUnusable": 0.01,
@@ -601,7 +601,7 @@
       "TestScanReusesUnchangedMetadataAcrossInvocations": 0.03,
       "TestScanSharesOneCacheBetweenConcurrentScans": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/setup": {
+    "github.com/HappyOnigiri/WorktreeX/internal/setup": {
       "TestApplyRejectsUnknownStepsAndSkipsNoOps": 0.01,
       "TestHooksApplyReportsTheWrittenPathAndBackup": 0.01,
       "TestHooksStepsFollowTheHookConfigStatus": 0.03,
@@ -616,7 +616,7 @@
       "TestWorktreeRootComparesRawValuesAndFixesPermissions": 0.03,
       "TestWorktreeRootReportsARejectedReload": 0.01
     },
-    "github.com/HappyOnigiri/WX/internal/state": {
+    "github.com/HappyOnigiri/WorktreeX/internal/state": {
       "TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer": 0.17,
       "TestActiveWorkspaceSnapshotsExcludesPendingAndExpiredArchives": 0.16,
       "TestAdministrativeStateTransitionsAndQueries": 0.15,
@@ -827,7 +827,7 @@
       "TestWorkspaceSlotPathsIncludesRetiredRootsAndAllSlotStates": 0.09,
       "TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive": 0.11
     },
-    "github.com/HappyOnigiri/WX/internal/workspace": {
+    "github.com/HappyOnigiri/WorktreeX/internal/workspace": {
       "TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement": 1.86,
       "TestAddWorktreeWithIdentityPropagatesLeafReservationFailure": 1.13,
       "TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd": 0.44,
@@ -995,107 +995,107 @@
       "TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries": 3.7,
       "TestWorktreeRecordAndCanonicalPathEdges": 0.01
     },
-    "github.com/HappyOnigiri/WX/tools/checkautomation": {
+    "github.com/HappyOnigiri/WorktreeX/tools/checkautomation": {
       "TestRunFollowsSubMakeInvocations": 0.01
     },
-    "github.com/HappyOnigiri/WX/tools/checkcomments": {
+    "github.com/HappyOnigiri/WorktreeX/tools/checkcomments": {
       "TestComments": 0.01,
       "TestRun": 0.01
     },
-    "github.com/HappyOnigiri/WX/tools/checkcoverage": {
+    "github.com/HappyOnigiri/WorktreeX/tools/checkcoverage": {
       "TestRejectZeroCoreFunctionsUsesGoCoverageReport": 0.11,
       "TestRunCoverageGate": 0.39
     },
-    "github.com/HappyOnigiri/WX/tools/checktestlayout": {
+    "github.com/HappyOnigiri/WorktreeX/tools/checktestlayout": {
       "TestRunHonorsExclusionKinds": 0.01
     },
-    "github.com/HappyOnigiri/WX/tools/checktests": {
+    "github.com/HappyOnigiri/WorktreeX/tools/checktests": {
       "TestParallelTopLevelTestsRequireDirectParallel": 0.01,
       "TestSQLiteBusyTimeout": 0.01,
       "TestSocketTempDir": 0.02
     },
-    "github.com/HappyOnigiri/WX/tools/citest": {
+    "github.com/HappyOnigiri/WorktreeX/tools/citest": {
       "TestExecuteRunStreamsOutputWhileTheProcessRuns": 0.01,
       "TestFlakyTestIsRetriedAndRecovered": 0.88,
       "TestPersistentFailureRemainsFailure": 1.37,
       "TestStableTestDoesNotRetry": 0.32,
       "TestUnresolvedDeclarationDoesNotBlockOtherPackages": 2.31
     },
-    "github.com/HappyOnigiri/WX/tools/hookcheck": {
+    "github.com/HappyOnigiri/WorktreeX/tools/hookcheck": {
       "TestStagedFilesUsesExplicitIndex": 0.26
     },
-    "github.com/HappyOnigiri/WX/tools/testdarwin": {
+    "github.com/HappyOnigiri/WorktreeX/tools/testdarwin": {
       "TestScriptPropagatesTheGoExitStatusAndStillCleansUp": 2.81,
       "TestScriptRejectsAMissingPackage": 0.02,
       "TestScriptRunsTheTestsInTheReportedTemporaryDirectory": 2.71,
       "TestScriptRunsTheWorkspacePackageVerbosely": 3.03
     },
-    "github.com/HappyOnigiri/WX/tools/testfocus": {
+    "github.com/HappyOnigiri/WorktreeX/tools/testfocus": {
       "TestScriptAddsVerboseOnlyWhenRequested": 0.9,
       "TestScriptForwardsThePackageAndRunPattern": 0.9,
       "TestScriptPropagatesTheGoExitStatus": 0.9,
       "TestScriptRejectsAMissingPackage": 0.01
     },
-    "github.com/HappyOnigiri/WX/tools/testrelease": {
+    "github.com/HappyOnigiri/WorktreeX/tools/testrelease": {
       "TestInstallAbsorbsSetupFailure": 9.9,
       "TestInstallRegistersDaemonAndPinsRelease": 7.4,
       "TestInstallReplacesLinkWithoutChangingOriginalBinary": 9.81,
       "TestReleaseBuildFailureDoesNotPublishStaleArtifacts": 2.12,
       "TestReleaseBuildProducesWorkflowAssets": 9.63
     },
-    "github.com/HappyOnigiri/WX/tools/testshard": {
+    "github.com/HappyOnigiri/WorktreeX/tools/testshard": {
       "TestCommandMainReturnsFailureForEmptySelection": 2.02
     },
-    "github.com/HappyOnigiri/WX/tools/workflowlint": {
+    "github.com/HappyOnigiri/WorktreeX/tools/workflowlint": {
       "TestRunActionlintFiltersOnlyQueueDiagnostic": 1.93
     }
   },
   "packages": {
-    "github.com/HappyOnigiri/WX/cmd/wx": 14.659,
-    "github.com/HappyOnigiri/WX/internal/agent": 3.698,
-    "github.com/HappyOnigiri/WX/internal/archive": 100.675,
-    "github.com/HappyOnigiri/WX/internal/cli": 23.851,
-    "github.com/HappyOnigiri/WX/internal/config": 3.062,
-    "github.com/HappyOnigiri/WX/internal/daemon": 52.28066666666667,
-    "github.com/HappyOnigiri/WX/internal/dashboard": 2.008,
-    "github.com/HappyOnigiri/WX/internal/diag": 2.186,
-    "github.com/HappyOnigiri/WX/internal/discovery": 11.896,
-    "github.com/HappyOnigiri/WX/internal/domain": 1.619,
-    "github.com/HappyOnigiri/WX/internal/fdexec": 3.902,
-    "github.com/HappyOnigiri/WX/internal/gitx": 10.111,
-    "github.com/HappyOnigiri/WX/internal/hookconfig": 3.346,
-    "github.com/HappyOnigiri/WX/internal/launchd": 8.356,
-    "github.com/HappyOnigiri/WX/internal/pool": 5.389,
-    "github.com/HappyOnigiri/WX/internal/rpc": 4.7219999999999995,
-    "github.com/HappyOnigiri/WX/internal/sessions": 3.07,
-    "github.com/HappyOnigiri/WX/internal/sessions/config": 2.1390000000000002,
-    "github.com/HappyOnigiri/WX/internal/sessions/identity": 2.312,
-    "github.com/HappyOnigiri/WX/internal/sessions/metacache": 3.684,
-    "github.com/HappyOnigiri/WX/internal/sessions/scanner": 3.409,
-    "github.com/HappyOnigiri/WX/internal/sessions/termtext": 1.592,
-    "github.com/HappyOnigiri/WX/internal/sessions/tui": 1.799,
-    "github.com/HappyOnigiri/WX/internal/setup": 3.945,
-    "github.com/HappyOnigiri/WX/internal/state": 6.107,
-    "github.com/HappyOnigiri/WX/internal/textfmt": 1.414,
-    "github.com/HappyOnigiri/WX/internal/tui": 3.029,
-    "github.com/HappyOnigiri/WX/internal/version": 1.77,
-    "github.com/HappyOnigiri/WX/internal/workspace": 57.483,
-    "github.com/HappyOnigiri/WX/tools/checkautomation": 2.403,
-    "github.com/HappyOnigiri/WX/tools/checkcomments": 2.518,
-    "github.com/HappyOnigiri/WX/tools/checkcoverage": 2.976,
-    "github.com/HappyOnigiri/WX/tools/checkdocsindex": 2.458,
-    "github.com/HappyOnigiri/WX/tools/checkfuzz": 2.451,
-    "github.com/HappyOnigiri/WX/tools/checkgitexec": 2.482,
-    "github.com/HappyOnigiri/WX/tools/checklines": 2.515,
-    "github.com/HappyOnigiri/WX/tools/checkmigrations": 2.443,
-    "github.com/HappyOnigiri/WX/tools/checktestlayout": 2.624,
-    "github.com/HappyOnigiri/WX/tools/checktests": 2.372,
-    "github.com/HappyOnigiri/WX/tools/citest": 6.828,
-    "github.com/HappyOnigiri/WX/tools/hookcheck": 2.178,
-    "github.com/HappyOnigiri/WX/tools/testdarwin": 4.915,
-    "github.com/HappyOnigiri/WX/tools/testfocus": 2.979,
-    "github.com/HappyOnigiri/WX/tools/testrelease": 12.614,
-    "github.com/HappyOnigiri/WX/tools/testshard": 4.131,
-    "github.com/HappyOnigiri/WX/tools/workflowlint": 4.027
+    "github.com/HappyOnigiri/WorktreeX/cmd/wx": 14.659,
+    "github.com/HappyOnigiri/WorktreeX/internal/agent": 3.698,
+    "github.com/HappyOnigiri/WorktreeX/internal/archive": 100.675,
+    "github.com/HappyOnigiri/WorktreeX/internal/cli": 23.851,
+    "github.com/HappyOnigiri/WorktreeX/internal/config": 3.062,
+    "github.com/HappyOnigiri/WorktreeX/internal/daemon": 52.28066666666667,
+    "github.com/HappyOnigiri/WorktreeX/internal/dashboard": 2.008,
+    "github.com/HappyOnigiri/WorktreeX/internal/diag": 2.186,
+    "github.com/HappyOnigiri/WorktreeX/internal/discovery": 11.896,
+    "github.com/HappyOnigiri/WorktreeX/internal/domain": 1.619,
+    "github.com/HappyOnigiri/WorktreeX/internal/fdexec": 3.902,
+    "github.com/HappyOnigiri/WorktreeX/internal/gitx": 10.111,
+    "github.com/HappyOnigiri/WorktreeX/internal/hookconfig": 3.346,
+    "github.com/HappyOnigiri/WorktreeX/internal/launchd": 8.356,
+    "github.com/HappyOnigiri/WorktreeX/internal/pool": 5.389,
+    "github.com/HappyOnigiri/WorktreeX/internal/rpc": 4.7219999999999995,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions": 3.07,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/config": 2.1390000000000002,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/identity": 2.312,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/metacache": 3.684,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner": 3.409,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/termtext": 1.592,
+    "github.com/HappyOnigiri/WorktreeX/internal/sessions/tui": 1.799,
+    "github.com/HappyOnigiri/WorktreeX/internal/setup": 3.945,
+    "github.com/HappyOnigiri/WorktreeX/internal/state": 6.107,
+    "github.com/HappyOnigiri/WorktreeX/internal/textfmt": 1.414,
+    "github.com/HappyOnigiri/WorktreeX/internal/tui": 3.029,
+    "github.com/HappyOnigiri/WorktreeX/internal/version": 1.77,
+    "github.com/HappyOnigiri/WorktreeX/internal/workspace": 57.483,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkautomation": 2.403,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkcomments": 2.518,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkcoverage": 2.976,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkdocsindex": 2.458,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkfuzz": 2.451,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkgitexec": 2.482,
+    "github.com/HappyOnigiri/WorktreeX/tools/checklines": 2.515,
+    "github.com/HappyOnigiri/WorktreeX/tools/checkmigrations": 2.443,
+    "github.com/HappyOnigiri/WorktreeX/tools/checktestlayout": 2.624,
+    "github.com/HappyOnigiri/WorktreeX/tools/checktests": 2.372,
+    "github.com/HappyOnigiri/WorktreeX/tools/citest": 6.828,
+    "github.com/HappyOnigiri/WorktreeX/tools/hookcheck": 2.178,
+    "github.com/HappyOnigiri/WorktreeX/tools/testdarwin": 4.915,
+    "github.com/HappyOnigiri/WorktreeX/tools/testfocus": 2.979,
+    "github.com/HappyOnigiri/WorktreeX/tools/testrelease": 12.614,
+    "github.com/HappyOnigiri/WorktreeX/tools/testshard": 4.131,
+    "github.com/HappyOnigiri/WorktreeX/tools/workflowlint": 4.027
   }
 }

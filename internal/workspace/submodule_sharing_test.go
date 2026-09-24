@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // shallow module は clone を止めず、object 共有不可の事実だけを warn に残す。

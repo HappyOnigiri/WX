@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // Root は storage.worktree_root の一世代である。設定 root が変わっても既存 slot は移動せず、以前の row を active=0 で残して解決を維持する。

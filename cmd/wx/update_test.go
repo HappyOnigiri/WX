@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/update"
+	"github.com/HappyOnigiri/WorktreeX/internal/update"
 )
 
 // updateTestAdapters は実網と実 process へ出さずに update の経路を通すための土台である。

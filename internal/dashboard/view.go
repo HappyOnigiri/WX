@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 const (

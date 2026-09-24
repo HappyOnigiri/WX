@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	sessionsconfig "github.com/HappyOnigiri/WX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	sessionsconfig "github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
 )
 
 // resumePolicyClient は起動場所の policy を cfg で固定した client と、会話履歴の置き場所を用意する。

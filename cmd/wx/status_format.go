@@ -12,7 +12,7 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/textfmt"
+	"github.com/HappyOnigiri/WorktreeX/internal/textfmt"
 )
 
 // 表示に使うタイムゾーン。テストが固定の地域時刻を検査するための差し替え点である。

@@ -3,8 +3,8 @@ package cli
 import (
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 // readiness の値は待機経路そのものを表す。`ready` は準備待ちをせず、

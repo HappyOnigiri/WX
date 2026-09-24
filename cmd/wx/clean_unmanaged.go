@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
 )
 
 // unmanagedTargetView は CleanUnmanaged が返す対象 1 件である。

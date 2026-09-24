@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // unmanagedFixture は登録済みと登録外の実体を並べた root を用意する。

@@ -3,9 +3,9 @@ package daemon
 import (
 	"context"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // SetupCheckRepository は初回セットアップ検査に必要な source と slot の対応である。

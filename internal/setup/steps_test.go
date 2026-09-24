@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
-	"github.com/HappyOnigiri/WX/internal/launchd"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/hookconfig"
+	"github.com/HappyOnigiri/WorktreeX/internal/launchd"
 )
 
 func stepByID(t *testing.T, steps []Step, id string) Step {

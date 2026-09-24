@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {

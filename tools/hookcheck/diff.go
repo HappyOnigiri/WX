@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 type changedFile struct {

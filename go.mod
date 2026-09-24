@@ -1,4 +1,4 @@
-module github.com/HappyOnigiri/WX
+module github.com/HappyOnigiri/WorktreeX
 
 go 1.27.1
 

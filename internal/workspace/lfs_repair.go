@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // LFSRepairFailureReason は source working tree から cache を直せなかった理由である。

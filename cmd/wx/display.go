@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // slotColumn は slots 表の 1 列である。min は値が短いときも保つ既定幅で、列の入れ替わりを目立たせないために置く。

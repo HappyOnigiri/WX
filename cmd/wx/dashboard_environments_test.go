@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // TestMarkDashboardRegistrationsKeepsConfiguredWorkspacesOnly は環境一覧の対象を

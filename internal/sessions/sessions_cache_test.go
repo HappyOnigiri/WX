@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
 )
 
 func historyConfig(t *testing.T, root string) config.Config {

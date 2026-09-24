@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // defaultRootAgentAssetNames は非 Git workspace root 直下から slot へ持ち込む agent 資産である。

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {

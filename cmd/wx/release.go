@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 func runRelease(ctx context.Context, args []string) int {

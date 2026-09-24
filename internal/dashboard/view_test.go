@@ -8,9 +8,9 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
 )
 
 func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {

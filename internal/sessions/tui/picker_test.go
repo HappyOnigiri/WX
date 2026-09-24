@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner"
 )
 
 // fixedNow は相対時刻の表示を固定するための基準時刻である。

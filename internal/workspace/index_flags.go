@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // GitValueFunc と GitRunFunc は、index flag の読み書きが worktree 内の Git を呼ぶために取る形である。

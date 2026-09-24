@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase は、SnapshotWithPersistence 固有の二つの失敗経路を検証する。

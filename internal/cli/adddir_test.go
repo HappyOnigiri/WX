@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 // leaseAddDirArgv は worktree 起動で組み立てる argv を、client.launch と同じ順序で返す。

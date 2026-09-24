@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func rootLifetimeManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {

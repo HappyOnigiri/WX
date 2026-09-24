@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 func newSubmoduleSharingDoctorFixture(t *testing.T) (*managerFixture, discovery.Workspace, string) {

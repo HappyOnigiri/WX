@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/testsupport"
+	"github.com/HappyOnigiri/WorktreeX/internal/testsupport"
 )
 
 func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // GCReason は GC が対象を処理できなかった理由を対象単位で返す。

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 func TestRestoreUsesDestinationIgnoreRulesAndRetainsTreeValidation(t *testing.T) {
