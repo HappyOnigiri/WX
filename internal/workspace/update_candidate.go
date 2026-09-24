@@ -20,21 +20,23 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 	}
 	var tracked, untracked map[string]bool
 	// 並び順がエラーの優先順位である。並列化前の直列の検査順に揃えている。
-	checks := []func() error{
-		func() error { return p.rejectChangedGitlinks(ctx, repo, oldOID, newOID) },
-		func() error { return p.rejectChangedAttributes(ctx, repo, oldOID, newOID) },
-		func() error { return p.rejectUnrestorableWorktreeState(ctx, repo, target, oldOID, newOID, previous) },
-		func() (err error) {
+	checks := []func(context.Context) error{
+		func(ctx context.Context) error { return p.rejectChangedGitlinks(ctx, repo, oldOID, newOID) },
+		func(ctx context.Context) error { return p.rejectChangedAttributes(ctx, repo, oldOID, newOID) },
+		func(ctx context.Context) error {
+			return p.rejectUnrestorableWorktreeState(ctx, repo, target, oldOID, newOID, previous)
+		},
+		func(ctx context.Context) (err error) {
 			tracked, err = p.gitPaths(ctx, target, "ls-tree", "-r", "--name-only", "-z", newOID)
 			return err
 		},
 		// 除外指定を付けない列挙は、untrackedとignoredを別々に列挙した和集合と同じ集合を1回の走査で返す。
-		func() (err error) {
+		func(ctx context.Context) (err error) {
 			untracked, err = p.gitPaths(ctx, target, "ls-files", "--others", "-z")
 			return err
 		},
 	}
-	if err := runChecksInOrder(checks); err != nil {
+	if err := runChecksInOrder(ctx, checks); err != nil {
 		return err
 	}
 	old := placementPathSet(previous)
@@ -57,15 +59,29 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 
 // runChecksInOrder は全ての検査を並列に実行し、完了を待ってからslice順で最初のエラーを返す。
 // 呼び出し側はエラーの種類でSTALE化するかを分けるため、到着順に採ると同じ状態でも貸出ごとに判定が変わる。
-// 先に失敗した検査で残りを取り消さないのも同じ理由で、取消しによるエラーが前の順位の本来のエラーを覆い得る。
-func runChecksInOrder(checks []func() error) error {
+// 失敗した検査より後ろの順位だけを取り消す。前の順位を取り消すと、取消しのエラーが本来のエラーを覆い得る。
+func runChecksInOrder(ctx context.Context, checks []func(context.Context) error) error {
 	errs := make([]error, len(checks))
+	contexts := make([]context.Context, len(checks))
+	cancels := make([]context.CancelFunc, len(checks))
+	for i := range checks {
+		contexts[i], cancels[i] = context.WithCancel(ctx)
+	}
+	defer func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	}()
 	var wait sync.WaitGroup
 	for i, check := range checks {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			errs[i] = check()
+			if errs[i] = check(contexts[i]); errs[i] != nil {
+				for _, cancel := range cancels[i+1:] {
+					cancel()
+				}
+			}
 		}()
 	}
 	wait.Wait()

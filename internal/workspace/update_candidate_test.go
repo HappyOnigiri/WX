@@ -198,16 +198,16 @@ func TestRunChecksInOrderReturnsFirstErrorByPosition(t *testing.T) {
 	last := errors.New("last")
 	lastReturned := make(chan struct{})
 	var middleRan atomic.Bool
-	err := runChecksInOrder([]func() error{
-		func() error {
+	err := runChecksInOrder(context.Background(), []func(context.Context) error{
+		func(context.Context) error {
 			<-lastReturned
 			return first
 		},
-		func() error {
+		func(context.Context) error {
 			middleRan.Store(true)
 			return nil
 		},
-		func() error {
+		func(context.Context) error {
 			defer close(lastReturned)
 			return last
 		},
@@ -218,8 +218,46 @@ func TestRunChecksInOrderReturnsFirstErrorByPosition(t *testing.T) {
 	if !middleRan.Load() {
 		t.Fatal("a check was skipped")
 	}
-	if err := runChecksInOrder([]func() error{func() error { return nil }}); err != nil {
+	if err := runChecksInOrder(context.Background(), []func(context.Context) error{func(context.Context) error { return nil }}); err != nil {
 		t.Fatalf("passing checks returned %v", err)
+	}
+}
+
+// 失敗した検査より後ろの順位だけを取り消し、前の順位の検査は取り消さずに最後まで走らせる。
+func TestRunChecksInOrderCancelsOnlyLaterChecks(t *testing.T) {
+	t.Parallel()
+	failed := errors.New("failed")
+	laterDone := make(chan struct{})
+	var earlierCanceled, laterCanceled atomic.Bool
+	err := runChecksInOrder(context.Background(), []func(context.Context) error{
+		func(ctx context.Context) error {
+			select {
+			case <-laterDone:
+			case <-time.After(10 * time.Second):
+			}
+			earlierCanceled.Store(ctx.Err() != nil)
+			return nil
+		},
+		func(context.Context) error { return failed },
+		func(ctx context.Context) error {
+			defer close(laterDone)
+			select {
+			case <-ctx.Done():
+				laterCanceled.Store(true)
+				return ctx.Err()
+			case <-time.After(10 * time.Second):
+				return nil
+			}
+		},
+	})
+	if !errors.Is(err, failed) {
+		t.Fatalf("error=%v, want the failed check's error", err)
+	}
+	if !laterCanceled.Load() {
+		t.Fatal("a later check was not canceled")
+	}
+	if earlierCanceled.Load() {
+		t.Fatal("an earlier check was canceled")
 	}
 }
 
