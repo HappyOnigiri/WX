@@ -83,6 +83,8 @@ os/execに出力用のWriterを渡すと、継承したpipeを保持する子孫
 猶予内に回収し切れなかった出力は切り詰めとして記録し、返却を待たせない。
 
 Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから、要求時に固定したOIDへdetachedのまま切り替える。
+切替後のtracked cleanは置換の後の最終検証で1回だけ確かめ、置換の直前は所有権だけを見る（置換しない回は直前の検証自体を省く）。
+置換の前後で同じ検査を重ねても、書込みを挟まない区間では結果が変わらないためである。`prepare.command`を再実行した回だけは、その汚れを置換の前に止めるため直前にも確かめる。
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
 `.gitattributes`の差、submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
 `.gitattributes`を除外するのは、`checkout-index`が内容の同じfileをstat cacheの一致で書き直さず、属性だけ変わったfileが旧属性のまま残るためである。

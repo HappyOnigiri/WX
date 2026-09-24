@@ -49,6 +49,12 @@ func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repositor
 	return p.cowFallback(ctx, mode, target, err)
 }
 
+// compactsWorktree はcompactWorktreeが共有を試みるかを返す。falseの回は宛先に触れずに戻る。
+func (p *Preparer) compactsWorktree(repo discovery.Repository) bool {
+	mode := p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))
+	return mode != config.CopyModeCopy && cowAvailable()
+}
+
 // logCOWFallback は auto が通常コピーへ落ちた事実を残す。
 // 失敗を握り潰したまま貸し出すと、CoW が常に効いていないことを利用者が知る手立てが無くなる。
 func (p *Preparer) logCOWFallback(target string, err error) {

@@ -622,3 +622,41 @@ func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 		t.Fatalf("a shared file went through the replacement path again: %d -> %d", before, after)
 	}
 }
+
+// 共有しない更新は CoW の直前の検証を省き、prepare command を再実行した回だけ完全な検証を残す。
+// 省いた検証は最終の検証と同じ内容で、再実行した回は prepare command の汚れを共有の前に止める必要がある。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestUpdateValidatesBeforeCOWOnlyWhenNeeded(t *testing.T) {
+	ctx := context.Background()
+	p, repo, baseOID, target := cowFixture(t)
+	main := string(repo.MainPath)
+	p.Config.Storage.CopyMode = config.CopyModeCopy
+	p.Config.Repositories = map[string]config.Repository{
+		main: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "true"}, Inputs: []string{"config"}}},
+	}
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(main, "unrelated"), "changed\n")
+	cowGit(t, main, "add", "unrelated")
+	cowGit(t, main, "commit", "-m", "change unrelated input")
+	unrelatedOID := cowGit(t, main, "rev-parse", "HEAD")
+	p.Phases = &PhaseTimings{}
+	if _, err := p.UpdateLocked(ctx, repo, target, baseOID, unrelatedOID, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatePhaseCounts(p.Phases)["update-validate"]; got != 2 {
+		t.Fatalf("update-validate=%d without compaction, want the first and final validations only", got)
+	}
+	writeTestFile(t, filepath.Join(main, "config", "db.yml"), "v2\n")
+	cowGit(t, main, "add", "config/db.yml")
+	cowGit(t, main, "commit", "-m", "change declared input")
+	inputOID := cowGit(t, main, "rev-parse", "HEAD")
+	p.Phases = &PhaseTimings{}
+	if _, err := p.UpdateLocked(ctx, repo, target, unrelatedOID, inputOID, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatePhaseCounts(p.Phases)["update-validate"]; got != 3 {
+		t.Fatalf("update-validate=%d after a prepare rerun, want the validation before CoW kept", got)
+	}
+}
