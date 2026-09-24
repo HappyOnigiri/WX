@@ -16,8 +16,8 @@ const source = {
   event: 'workflow_dispatch',
   ref: 'main',
   apiHeadSha: sha,
-  runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/10',
-  commitUrl: `https://github.com/HappyOnigiri/WX/commit/${sha}`,
+  runUrl: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10',
+  commitUrl: `https://github.com/HappyOnigiri/WorktreeX/commit/${sha}`,
 };
 
 function manifest(runId = '10', attempt = '1', profile = 'internal/config') {
@@ -183,7 +183,7 @@ test('creates once, suppresses the same marker, and reopens closed issues', asyn
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group, source }), 'already-recorded');
   issues[0].body = '';
   issues[0].state = 'closed';
-  const laterSource = { ...source, runId: '11', runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/11' };
+  const laterSource = { ...source, runId: '11', runUrl: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/11' };
   const later = reporter.aggregateManifests([{ artifactName: 'mutation-config-11-1', manifest: manifest('11') }], laterSource)[0];
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group: later, source: laterSource }), 'reopened-commented');
   assert.deepEqual(issues[0].labels.map((label) => label.name), ['mutation']);
@@ -316,7 +316,7 @@ test('uses job URLs and warnings in the run orchestration', async () => {
   const warnings = [];
   const github = { rest: {
     actions: {
-      listJobsForWorkflowRun: async () => ({ data: { jobs: [{ name: 'hunt (config)', run_attempt: 1, html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/1' }] } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs: [{ name: 'hunt (config)', run_attempt: 1, html_url: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10/job/1' }] } }),
     },
     issues: {
       getLabel: async () => ({ data: { name: 'mutation' } }),
@@ -340,7 +340,7 @@ test('uses job URLs and warnings in the run orchestration', async () => {
     core: { warning: (message) => warnings.push(message) },
   });
   assert.equal(result.survivorCount, 1);
-  assert.equal(result.groups[0].items[0].observations[0].jobUrl, 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/1');
+  assert.equal(result.groups[0].items[0].observations[0].jobUrl, 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10/job/1');
   assert.deepEqual(warnings, ['mutation-config-10-1: 2 mutation(s) not covered']);
 });
 

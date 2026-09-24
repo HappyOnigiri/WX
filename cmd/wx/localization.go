@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // localization.go は cmd/wx が表示言語を決める土台を持つ。

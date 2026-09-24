@@ -4,7 +4,7 @@ package main
 import (
 	"time"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 // citest は go test -json の解析と宣言解決を tools/internal/gotest と共有する。

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
 )
 
 type HookInput struct {

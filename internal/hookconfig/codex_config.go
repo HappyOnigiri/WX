@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // codexPolicyFindings は有効な hooks.json があっても user hook を無効にし得る Codex 設定を調べる。

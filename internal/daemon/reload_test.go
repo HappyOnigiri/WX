@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {

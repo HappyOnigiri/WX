@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/fdexec"
+	"github.com/HappyOnigiri/WorktreeX/internal/fdexec"
 )
 
 type Result struct {

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
-	"github.com/HappyOnigiri/WX/internal/sessions/metacache"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/metacache"
 )
 
 func cachePath(t *testing.T) string {

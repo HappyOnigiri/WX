@@ -1,6 +1,6 @@
 package setup
 
-import "github.com/HappyOnigiri/WX/internal/i18n"
+import "github.com/HappyOnigiri/WorktreeX/internal/i18n"
 
 const messagePairWidth = 2
 

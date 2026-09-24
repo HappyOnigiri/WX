@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/HappyOnigiri/WX/internal/i18n"
+import "github.com/HappyOnigiri/WorktreeX/internal/i18n"
 
 // message は message ID と、その template が使うフィールドを 1 行で組み立てる。
 // 診断は 1 つの finding で 3〜4 個の message を作るため、map literal を毎回書くと報告内容が埋もれる。

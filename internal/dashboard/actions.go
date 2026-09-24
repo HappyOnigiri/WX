@@ -1,6 +1,6 @@
 package dashboard
 
-import "github.com/HappyOnigiri/WX/internal/i18n"
+import "github.com/HappyOnigiri/WorktreeX/internal/i18n"
 
 // Action は TUI で確定した既存 CLI 操作である。
 // WorkDir は起動・貸出・bench が対象にする明示的な作業元で、process の cwd は変更しない。

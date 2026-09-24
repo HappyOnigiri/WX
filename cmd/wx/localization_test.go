@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // commandContext は呼び出し元が言語を決めている場合それを尊重し、無い場合だけ設定を読む。

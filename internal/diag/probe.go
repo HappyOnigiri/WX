@@ -1,6 +1,6 @@
 package diag
 
-import "github.com/HappyOnigiri/WX/internal/i18n"
+import "github.com/HappyOnigiri/WorktreeX/internal/i18n"
 
 // 実地検査が返す検査名。findings と同じ名前空間なので `--json` の識別子としてそのまま使える。
 const (

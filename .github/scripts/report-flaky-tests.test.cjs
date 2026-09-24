@@ -50,8 +50,8 @@ const source = {
   event: 'push',
   ref: 'main',
   testSha: '0123456789abcdef0123456789abcdef01234567',
-  runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/10',
-  commitUrl: 'https://github.com/HappyOnigiri/WX/commit/0123456789abcdef0123456789abcdef01234567',
+  runUrl: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10',
+  commitUrl: 'https://github.com/HappyOnigiri/WorktreeX/commit/0123456789abcdef0123456789abcdef01234567',
 };
 
 test('groups coverage and race evidence under one issue key', () => {
@@ -72,7 +72,7 @@ test('associates a race-state report with its job URL', async () => {
       getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
       listJobsForWorkflowRun: async () => ({ data: { jobs: [{
         name: 'race (state)',
-        html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state',
+        html_url: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10/job/state',
         run_attempt: 1,
         conclusion: 'success',
         steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
@@ -92,7 +92,7 @@ test('associates a race-state report with its job URL', async () => {
     sourceAttempt: source.attempt,
     reports: [{ artifactName: 'ci-tests-race-state-10-1', manifest: manifest('10', '1', 'race-state') }],
   });
-  assert.equal(result.groups[0].items[0].jobUrl, 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state');
+  assert.equal(result.groups[0].items[0].jobUrl, 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10/job/state');
 });
 
 test('rejects a race-state artifact whose manifest names another profile', () => {
@@ -105,7 +105,7 @@ test('collects every weighted race shard as a separate profile', async () => {
   const shards = ['race-daemon-0', 'race-daemon-1', 'race-daemon-2', 'race-rest-0', 'race-rest-1'];
   const jobs = shards.map((profile) => ({
     name: `race (${profile.replace(/^race-/, '')})`,
-    html_url: `https://github.com/HappyOnigiri/WX/actions/runs/10/job/${profile}`,
+    html_url: `https://github.com/HappyOnigiri/WorktreeX/actions/runs/10/job/${profile}`,
     run_attempt: 1,
     conclusion: 'success',
     steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
@@ -200,7 +200,7 @@ test('creates once and comments on a later occurrence of the same issue', async 
   } } };
   const group1 = reporter.aggregateManifests([{ artifactName: 'coverage', manifest: manifest('10', '1') }], source)[0];
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group: group1, source }), 'created');
-  const source2 = { ...source, runId: '11', runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/11' };
+  const source2 = { ...source, runId: '11', runUrl: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/11' };
   const group2 = reporter.aggregateManifests([{ artifactName: 'coverage', manifest: manifest('11', '1') }], source2)[0];
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group: group2, source: source2 }), 'commented');
   assert.deepEqual(calls, [['create', 1], ['comment', 1]]);
@@ -224,7 +224,7 @@ test('runs the report workflow with mocked Actions and issue APIs', async () => 
   const issues = [];
   const comments = new Map();
   let currentRun = '10';
-  const sourceRun = (id) => ({ name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: '0123456789abcdef0123456789abcdef01234567', html_url: `https://github.com/HappyOnigiri/WX/actions/runs/${id}` });
+  const sourceRun = (id) => ({ name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: '0123456789abcdef0123456789abcdef01234567', html_url: `https://github.com/HappyOnigiri/WorktreeX/actions/runs/${id}` });
   const github = { rest: {
     actions: {
       getWorkflowRun: async ({ run_id: id }) => { currentRun = String(id); return { data: sourceRun(id) }; },
@@ -255,7 +255,7 @@ test('files the recoveries it has before failing on a missing artifact', async (
   const warnings = [];
   const github = { rest: {
     actions: {
-      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: '0123456789abcdef0123456789abcdef01234567', html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10' } }),
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: '0123456789abcdef0123456789abcdef01234567', html_url: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10' } }),
       // coverage-testsはBuild CI test runnerで落ち、if-no-files-foundの警告だけでuploadが成功した状態。
       listJobsForWorkflowRun: async () => ({ data: { jobs: [
         { name: 'coverage-tests', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
@@ -346,7 +346,7 @@ function huntManifest(huntId, overrides = {}) {
   };
 }
 
-const huntSource = { ...source, kind: 'hunt', runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/10' };
+const huntSource = { ...source, kind: 'hunt', runUrl: 'https://github.com/HappyOnigiri/WorktreeX/actions/runs/10' };
 
 function huntGithub({ jobs = [], artifacts = [], issues = [], comments = new Map(), calls = [] } = {}) {
   return { rest: {

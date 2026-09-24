@@ -3,7 +3,7 @@ package daemon
 import (
 	"errors"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // gitFailureInfo は Git が既に書いた詳細ログを、処理種別の failure code と path に結び付ける。

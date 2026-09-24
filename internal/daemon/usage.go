@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // rootUsageSample は lifecycle が測った root 1 世代分のディスク使用量。

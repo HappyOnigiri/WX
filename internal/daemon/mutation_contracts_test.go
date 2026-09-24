@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/update"
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/update"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 func TestMutationUpdateChildEnvAcceptsAnEmptyEnvironment(t *testing.T) {

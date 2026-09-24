@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // TestMutationAutoMergeTreeFailures は AUTO_MERGE の欠落・空値・不正 tree を

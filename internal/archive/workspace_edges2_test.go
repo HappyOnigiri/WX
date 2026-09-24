@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts は normalizeWorkspaceExclusions の重複除外を検証する。

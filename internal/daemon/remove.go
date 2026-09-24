@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {

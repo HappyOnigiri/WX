@@ -10,7 +10,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // Action は 1 つの項目に対して選べる操作である。

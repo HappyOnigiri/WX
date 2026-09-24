@@ -3,7 +3,7 @@ package setup
 import (
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // TestMessageBuildsTemplateData は、名前と値を交互に並べる書き方が template のデータになることと、

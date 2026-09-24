@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // changedAgainstHead は snapshot の worktree tree が HEAD と異なる path を返す。

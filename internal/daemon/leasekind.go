@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // leaseAttrs は agent 起動以外への worktree 貸出（wx shell / wx run / wx new）の属性である。

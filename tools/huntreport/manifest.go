@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 // countPattern と runPattern は、issue本文へ残すハント条件をコマンドから拾う。

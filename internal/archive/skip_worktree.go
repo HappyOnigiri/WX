@@ -3,7 +3,7 @@ package archive
 import (
 	"fmt"
 
-	"github.com/HappyOnigiri/WX/internal/workspace"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
 
 // gitValueFunc と gitRunFunc は、snapshot と restore が worktree 内の Git を呼ぶために閉じ込めた関数である。

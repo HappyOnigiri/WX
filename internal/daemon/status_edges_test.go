@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WorktreeX/internal/hookconfig"
 )
 
 func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {

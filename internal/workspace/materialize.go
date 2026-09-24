@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // defaultWorkspaceRootCopyNames は workspace root にある通常の file を multi-repository slot へ materialize する名前である。

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // 区間は最初に現れた順で並び、同じ名前は回数と時間を足し合わせる。

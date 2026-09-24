@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 // excerptLimit は1つのテストについて残す失敗ログの上限バイト数。

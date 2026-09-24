@@ -4,7 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // WorktreePolicyReply は cwd に適用される worktree の方針である。

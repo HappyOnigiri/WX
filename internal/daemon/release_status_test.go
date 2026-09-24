@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 func TestReleaseStatusReportsFailedJobAndDetail(t *testing.T) {

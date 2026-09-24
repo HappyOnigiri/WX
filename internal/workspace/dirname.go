@@ -7,9 +7,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // maxRepositoryDirNameLength は directory 名を制限し、remote 名が異常に長い repository でも深い slot path を platform の component 長制限内に収める。

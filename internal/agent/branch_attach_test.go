@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // branchPolicyFixture は main worktree と、detached・attached の linked worktree を持つ本物のリポジトリである。

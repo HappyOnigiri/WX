@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // benchSweepRun は集計の入力になる1回分の結果を組む。

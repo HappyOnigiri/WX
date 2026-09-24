@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
-	"github.com/HappyOnigiri/WX/internal/sessions/identity"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/identity"
 )
 
 func copyFixture(t *testing.T, name, destination string) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // waitForFile は barrier file の出現を待つ。待ちきれない場合はテストを失敗させる。

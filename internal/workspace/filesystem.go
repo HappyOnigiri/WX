@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // OpenPhysicalRoot は filesystem root の descriptor 経由で path を開き、検証済み directory を独自の Root として開き直す。

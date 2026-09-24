@@ -8,8 +8,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	sessionsconfig "github.com/HappyOnigiri/WX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	sessionsconfig "github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
 )
 
 type Duration struct{ time.Duration }

@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 func TestCatalogCoversEveryConfigKey(t *testing.T) {

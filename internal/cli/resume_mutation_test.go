@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
 )
 
 const resumeParserTestTimeout = time.Second

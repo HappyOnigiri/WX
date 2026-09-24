@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
+	"github.com/HappyOnigiri/WorktreeX/internal/archive"
 )
 
 // PruneKeptRef は削除しなかった孤児 ref と、その理由になった object 数。

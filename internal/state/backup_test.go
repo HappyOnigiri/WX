@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // backupBulkPages は online backup が複数 step に分かれるだけの page 数を稼ぐための blob 総量である。

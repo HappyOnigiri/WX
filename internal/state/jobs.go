@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 type Job struct {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // Resolve は finding が持つ message ID を lang で解決し、string フィールドへ書き戻す。

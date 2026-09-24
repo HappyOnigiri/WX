@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/sessions/config"
-	"github.com/HappyOnigiri/WX/internal/sessions/identity"
-	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/identity"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner"
 )
 
 func TestScopeMatchesRootBoundariesAndArchivedIdentities(t *testing.T) {

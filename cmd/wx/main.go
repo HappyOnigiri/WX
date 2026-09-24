@@ -9,13 +9,13 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/HappyOnigiri/WX/internal/agent"
-	"github.com/HappyOnigiri/WX/internal/cli"
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/fdexec"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/tui"
-	buildversion "github.com/HappyOnigiri/WX/internal/version"
+	"github.com/HappyOnigiri/WorktreeX/internal/agent"
+	"github.com/HappyOnigiri/WorktreeX/internal/cli"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/fdexec"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
+	buildversion "github.com/HappyOnigiri/WorktreeX/internal/version"
 )
 
 var (

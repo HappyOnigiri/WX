@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // Phase は準備の1区間の呼び出し回数と合計所要時間である。

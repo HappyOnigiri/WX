@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // Event は wx が登録する hook event と、その event を処理する wx サブコマンドを表す。

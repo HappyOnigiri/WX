@@ -6,11 +6,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/HappyOnigiri/WX/internal/tui"
-	"github.com/HappyOnigiri/WX/internal/update"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/rpc"
+	"github.com/HappyOnigiri/WorktreeX/internal/tui"
+	"github.com/HappyOnigiri/WorktreeX/internal/update"
 )
 
 // updateNoticeTimeout は案内のための RPC を待つ上限である。

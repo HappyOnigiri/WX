@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
 )
 
 // LFSObjectCandidate は snapshot で新しく現れた LFS pointer と、その path である。

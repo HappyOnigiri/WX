@@ -3,7 +3,7 @@ package discovery
 import (
 	"testing"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 func TestMissingRefErrorClassificationKeepsExecutionFailuresDistinct(t *testing.T) {

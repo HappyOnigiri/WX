@@ -5,9 +5,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/textfmt"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/textfmt"
 )
 
 // doctorProbeHint は静的検査だけを終えたときに、何をまだ見ていないかを伝える 1 行である。

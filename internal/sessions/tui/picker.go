@@ -9,10 +9,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
-	"github.com/HappyOnigiri/WX/internal/sessions/termtext"
-	"github.com/HappyOnigiri/WX/internal/textfmt"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/scanner"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/termtext"
+	"github.com/HappyOnigiri/WorktreeX/internal/textfmt"
 )
 
 // ErrCancelled は選択を確定せずに picker を終了したことを示す。

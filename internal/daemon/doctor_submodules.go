@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // unsavedSubmoduleFindings は、snapshot に入らなかった submodule 作業のために残している slot を報告する。

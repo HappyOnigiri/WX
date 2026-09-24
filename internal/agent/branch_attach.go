@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 const (

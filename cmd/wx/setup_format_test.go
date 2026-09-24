@@ -7,8 +7,8 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/setup"
 )
 
 // worktreeRootSummary と hooksSummary は setup が返す形の要約で、表示文ではなく message ID を持つ。

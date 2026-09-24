@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/diag"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // 欠損の重大さは slot の状態で決める。貸出中・保存中の欠損だけが利用者の対処を要する。

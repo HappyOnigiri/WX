@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
-	"github.com/HappyOnigiri/WX/internal/sessions"
-	"github.com/HappyOnigiri/WX/internal/sessions/identity"
+	"github.com/HappyOnigiri/WorktreeX/internal/daemon"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions"
+	"github.com/HappyOnigiri/WorktreeX/internal/sessions/identity"
 )
 
 // resumeStatus は再開前の軽量な問い合わせの応答である。

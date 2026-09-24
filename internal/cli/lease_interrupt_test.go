@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
 )
 
 // holdInterrupt は test process が SIGINT の既定動作で終了しないようにする。

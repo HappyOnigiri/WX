@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 // gitStateDirectories と gitStateFiles は、停止中の merge/rebase/cherry-pick 等の進行情報を持つ

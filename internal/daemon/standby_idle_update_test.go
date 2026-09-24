@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/state"
 )
 
 // advanceMain は standby の fingerprint をずらすだけの、更新に適合する commit を main へ積む。

@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 func resolveFailedDeclarations(ctx context.Context, cfg config, failed map[string][]string) (map[string]map[string]declaration, []string) {

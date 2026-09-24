@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/testsupport"
+	"github.com/HappyOnigiri/WorktreeX/internal/testsupport"
 )
 
 // peerCloseHandler は切断通知が届くまで待ち、届いたかどうかを報告する handler である。

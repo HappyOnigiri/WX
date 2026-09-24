@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WorktreeX/internal/i18n"
 )
 
 // Severity は診断 1 件の扱いである。検出側がこの値を決め、表示側は文面から重大さを判定しない。

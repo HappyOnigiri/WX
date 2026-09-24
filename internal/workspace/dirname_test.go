@@ -5,9 +5,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/discovery"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
 )
 
 // TestRepositoryDirNameResolutionOrderは、文書化された解決順序を一度に一段ずつ確認する。

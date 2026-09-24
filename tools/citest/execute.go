@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 func executeRun(ctx context.Context, cfg config, command []string, label, coverage string, output io.Writer) (testResult, error) {

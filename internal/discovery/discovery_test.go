@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WorktreeX/internal/config"
+	"github.com/HappyOnigiri/WorktreeX/internal/domain"
+	"github.com/HappyOnigiri/WorktreeX/internal/gitx"
 )
 
 func TestResolveRepositoryUsesMainWorktreeAndConfiguredBranch(t *testing.T) {
@@ -525,22 +525,22 @@ func TestInspectRepositoryReadsOriginRemoteName(t *testing.T) {
 		t.Fatalf("remote name without an origin=%q", without.RemoteName)
 	}
 
-	runDiscoveryGit(t, repository, "remote", "add", "origin", "https://github.com/HappyOnigiri/WX.git")
+	runDiscoveryGit(t, repository, "remote", "add", "origin", "https://github.com/HappyOnigiri/WorktreeX.git")
 	with, err := discoverer.inspectRepo(context.Background(), repository, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if with.RemoteName != "WX" {
+	if with.RemoteName != "WorktreeX" {
 		t.Fatalf("remote name=%q", with.RemoteName)
 	}
 }
 
 func TestRemoteBaseNameReducesRemoteURLForms(t *testing.T) {
 	for _, test := range []struct{ url, want string }{
-		{url: "https://github.com/HappyOnigiri/WX.git", want: "WX"},
-		{url: "https://github.com/HappyOnigiri/WX", want: "WX"},
-		{url: "  https://github.com/HappyOnigiri/WX/  ", want: "WX"},
-		{url: "git@github.com:HappyOnigiri/WX.git", want: "WX"},
+		{url: "https://github.com/HappyOnigiri/WorktreeX.git", want: "WorktreeX"},
+		{url: "https://github.com/HappyOnigiri/WorktreeX", want: "WorktreeX"},
+		{url: "  https://github.com/HappyOnigiri/WorktreeX/  ", want: "WorktreeX"},
+		{url: "git@github.com:HappyOnigiri/WorktreeX.git", want: "WorktreeX"},
 		{url: "ssh://git@example.invalid/deep/path/name.git", want: "name"},
 		{url: "/srv/git/bare-repo.git", want: "bare-repo"},
 		{url: `C:\repos\windows-style.git`, want: "windows-style"},

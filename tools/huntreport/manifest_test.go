@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+	"github.com/HappyOnigiri/WorktreeX/tools/internal/gotest"
 )
 
 func tallyState() *huntState {
