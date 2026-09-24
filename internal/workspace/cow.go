@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -105,12 +106,15 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		return fmt.Errorf("%w: open CoW Git directory: %w", state.ErrOwnership, err)
 	}
 	defer directory.Close()
-	leftovers, err := p.runGitInDirectory(ctx, directory, cowLeftoverArgs()...)
-	if err != nil {
-		return err
-	}
-	if err := cowLeftoverResult(leftovers.Stdout); err != nil {
-		return err
+	scoped := scope != nil && scope.scopedLeftovers
+	if !scoped {
+		leftovers, err := p.runGitInDirectory(ctx, directory, cowLeftoverArgs()...)
+		if err != nil {
+			return err
+		}
+		if err := cowLeftoverResult(leftovers.Stdout); err != nil {
+			return err
+		}
 	}
 	entries, err := p.runGitInDirectory(ctx, directory, "ls-files", "--stage", "-z")
 	if err != nil {
@@ -123,6 +127,11 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 	stats := &cowStats{}
 	stats.entries.Store(int64(len(parsed)))
 	candidates := scope.narrow(parsed)
+	if scoped {
+		if err := rejectCOWTemporariesIn(destination, candidates, cowIndexNames(entries.Stdout)); err != nil {
+			return err
+		}
+	}
 	if len(candidates) > 0 {
 		// main 側 index の読み出しは候補が残る回だけ行う。書き直しが1件も無い更新では index 全体の解析がそのまま無駄になる。
 		candidates = selectCOWCandidates(candidates, p.cowSourceIndexOIDs(ctx, source))
@@ -266,4 +275,47 @@ func (p *Preparer) rejectCOWTemporaries(ctx context.Context, target, identity st
 		return err
 	}
 	return cowLeftoverResult(result.Stdout)
+}
+
+// rejectCOWTemporariesIn は共有の候補を含むディレクトリだけを読み、交換の一時ファイルが残っていれば止める。
+// 全体を探す`ls-files --others`はworktreeの規模で時間が決まるため、候補の限られる更新ではこちらを使う。
+// 同名のtracked fileは生成物ではないのでindexと突き合わせて除く。全体の探索と違いignoredの一時ファイルも残骸として扱う。
+// commentlint:allow-long -- 全体の探索との判定の差（ignoredの扱い）は置き換えの安全性の判断に要る
+func rejectCOWTemporariesIn(destination *os.Root, candidates []cowIndexEntry, tracked map[string]bool) error {
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		directory := filepath.Dir(candidate.name)
+		if seen[directory] {
+			continue
+		}
+		seen[directory] = true
+		names, err := readCOWDirectoryNames(destination, directory)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%w: list CoW destination directory: %w", state.ErrOwnership, err)
+		}
+		for _, name := range names {
+			if strings.HasPrefix(name, cowTemporaryPrefix) && !tracked[filepath.Join(directory, name)] {
+				return cowLeftoverResult(name)
+			}
+		}
+	}
+	return nil
+}
+
+// readCOWDirectoryNames は共有と同じくpin済みのrootから辿ってディレクトリを開き、path名を歩き直さない。
+func readCOWDirectoryNames(destination *os.Root, directory string) ([]string, error) {
+	root, err := domain.OpenRootAt(destination, directory)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	parent, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = parent.Close() }()
+	return parent.Readdirnames(-1)
 }

@@ -45,6 +45,17 @@ func parseCOWIndexEntries(stdout string) ([]cowIndexEntry, error) {
 	return entries, nil
 }
 
+// cowIndexNames は宛先 index の全 entry の path を返す。mode を問わず、一時ファイルの探索から tracked を除く用途に使う。
+func cowIndexNames(stdout string) map[string]bool {
+	names := map[string]bool{}
+	for _, entry := range strings.Split(stdout, "\x00") {
+		if _, name, ok := strings.Cut(entry, "\t"); ok {
+			names[name] = true
+		}
+	}
+	return names
+}
+
 // parseCOWGitlinkPaths は宛先 index の gitlink entry から子の配置 path を取り出す。
 // 子の checkout を共有する入口でだけ使い、mode 160000 以外の entry は無視する。
 func parseCOWGitlinkPaths(stdout string) ([]string, error) {
@@ -119,6 +130,8 @@ func (p *Preparer) cowSourceIndexOIDs(ctx context.Context, source *os.Root) map[
 type cowScope struct {
 	rewritten map[string]bool
 	excluded  map[string]bool
+	// scopedLeftovers は交換の一時ファイルの探索を候補のディレクトリに限ってよいことを表し、UPDATEだけが立てる。
+	scopedLeftovers bool
 }
 
 // narrow は scope の集合に従って候補を絞る。

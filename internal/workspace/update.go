@@ -120,7 +120,7 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 		}
 	}
 	if err := p.timePhase("update-cow", func() error {
-		scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired)
+		scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired, rerunPrepare)
 		if err != nil {
 			return err
 		}
@@ -141,7 +141,8 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 // 集合の外は前回の準備が残した実体のままなので、候補から外しても宛先のbytesは変わらず、共有済みなら共有が続く。
 // 逆に前回共有できなかったpathを更新で共有し直すことは諦める。共有の水準は準備時に決まり、更新では増えない。
 // commentlint:allow-long -- 候補限定の根拠（bytesが変わらないこと）と代償（共有が増えないこと）はどちらも保守に要る
-func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository, oldOID, newOID string, previous, desired []state.Placement) (*cowScope, error) {
+// rerunPrepareはprepare commandを再実行したかで、再実行した回は集合の外にも一時ファイル名が作られ得るため、残骸の探索を全体へ戻す。
+func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository, oldOID, newOID string, previous, desired []state.Placement, rerunPrepare bool) (*cowScope, error) {
 	// rename検出は報告を減らす方向にしか働かない（旧名が落ちる）ため切る。集合は多めに見積もる側へ倒す。
 	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "--no-renames", "-z", oldOID, newOID)
 	if err != nil {
@@ -159,7 +160,7 @@ func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository
 			rewritten[filepath.Clean(placement.RelativePath)] = true
 		}
 	}
-	return &cowScope{rewritten: rewritten}, nil
+	return &cowScope{rewritten: rewritten, scopedLeftovers: !rerunPrepare}, nil
 }
 
 func unchangedPlacements(previous, desired []state.Placement) []state.Placement {

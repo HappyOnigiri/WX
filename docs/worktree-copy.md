@@ -55,6 +55,9 @@ metadata（所有者・mode・flags・ACL・xattr）の不一致、mainのtree�
 集合は旧OIDと要求OIDの差分に、`slot_placements`の旧履歴と新計画に挙がったpathを足したものである。
 したがって共有の水準は準備時に決まり、更新では増えない。前回共有できなかったpathをmainの状態が変わってから拾い直すことはしない。
 復元と新規準備は限定しない。宛先に共有済みの実体が無いため、絞ると共有が減るだけになる。
+UPDATEは中断した置換の`.wx-cow-*`の探索も、候補を含むディレクトリの読み取りに限る。
+更新の中断・失敗は隔離になるので、READYから始まる更新で残り得るのは前回の準備の残骸だけで、置換が触るのは候補のディレクトリだけだからである。
+`prepare.command`を再実行した更新だけは、commandが集合の外にもその名前を作り得るため、全体の探索に戻す。
 
 置換は復元の完了前に行い、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
