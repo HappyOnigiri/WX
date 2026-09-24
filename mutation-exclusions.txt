@@ -29,15 +29,15 @@ internal/sessions/tui/picker.go	ast-v1:15c207a1918111fb3d1d24f0a4e0a39ab084daea8
 internal/sessions/tui/picker.go	ast-v1:72b5bfaf30efa8e1ce92421238f0b9054bd58f3be000b4c9f23143de6b3c3a41	moveTo は直後の ensureVisible で選択値を表示範囲へ clamp するため、上限値の - と + は同じ選択結果になる等価変異。
 internal/rpc/protocol.go	ast-v1:e68ff49e22bf414188e7376eef3a19c073559bba4abc4f348c724ef550cfc70b	ConnectRetry==0ではretryUntilを呼び出し開始前に設定するため、<=を<へ変えても期限判定が必ず終了し、観測可能な挙動が変わらない等価変異。
 internal/i18n/message.go	ast-v1:5c04663a702f249fb1630a9491845749061f26254f145c77943e2cb76ca9a7c8	len(data)==0ではentriesが無く、mapの空コピーによるallocation差だけでLocalizeの表示結果は変わらないため
-internal/pool/branch.go	ast-v1:b8ce96dd324350e66b1d8f47ac52fa0084c50d342352338de679c63b614496f6	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
-internal/pool/branch.go	ast-v1:5cf165baa8b7af88c4f94e55b6982bb07d510942e00d42e3527e583d15feaa09	matched==0のlen(applicable)==1は直前の分岐で処理済みのため、後続の>1を>=1へ変えても到達結果は変わらないため
+internal/pool/branch.go	ast-v1:09c8046bdd67e42712f53eca26837bf67fac8d666d99a9b1f16ebae135858eee	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
+internal/pool/branch.go	ast-v1:ff119c6e46cddf52c40f841f94ca109512cd2eb967c4fb52bdaaa59a5df186da	matched==0のlen(applicable)==1は直前の分岐で処理済みのため、後続の>1を>=1へ変えても到達結果は変わらないため
 internal/workspace/cow_place.go	ast-v1:83de7f2fd36878bc475a55dc0c12a68602da0f262cb6f90de072f4b61d1c8db4	An empty LFS OID set returns from readCOWLFSBlobPointers before any Git or filesystem operation, so > and >= are observationally equivalent.
 internal/workspace/cow_index.go	ast-v1:70e1ad721781f13a534762414a62571d7b4fdc2a76dbd45c33f19d043f766f31	rewritten map は結果の候補集合ではなく make の初期 capacity にだけ使うため、nil 判定を反転しても戻り値と内容は変わらない等価変異
 internal/workspace/cow_place.go	ast-v1:e7b37c196d341f4c3826576b897c3eea7f5b2a7434a23f550860cace76c91caf	共有接頭辞の再利用は open/close の回数だけを変え、各 path の descriptor と配置結果は変わらないため、比較子の反転は観測可能な差がない
 internal/workspace/cow_place.go	ast-v1:08fd1139072b004b8621aad83431a21adb82d3cc58ad5acb7ef168fae39b81e5	共有接頭辞の再利用は open/close の回数だけを変え、各 path の descriptor と配置結果は変わらないため、比較子の反転は観測可能な差がない
 internal/workspace/cow_share.go	ast-v1:d15863184b3bb50bac31b42568f1832ac39b0ce8154722760d4353d795fa4d5b	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
 internal/workspace/capacity.go	ast-v1:bab7d79f6eb40108588ef39740e1507bbe656d4b176ff650058f6185c8861eb6	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
-internal/workspace/fingerprint.go	ast-v1:7f4da28faee5596de43bd39af6fcb92be36843722ee2a8ff051916bc54834648	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
+internal/workspace/fingerprint.go	ast-v1:76b9d175240f75e7ceb35ac8a6dbd573e919ef8771430c9cbd0b97edae5ce39b	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
 internal/workspace/lfs_cow.go	ast-v1:6f1a354131ba9d822eab90befecb6af6584d026c01b846e37fce14d71aad3e04	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
 internal/workspace/placements.go	ast-v1:cfb7cd23c10bbc612bdacc1483e1dd995a9a2dd84c8528daf477bd61d867abe9	同じRepositoryID内の異なるRelativePathだけを比較するため、< と <= は同じ順序になる
 internal/workspace/placements.go	ast-v1:6e6ab27f0f3cf97da488b07b9cc66bd46c1e0cc2083794e995e719df548f9f3a	The RepositoryID comparator is reached only when IDs differ because equal IDs take the earlier branch, so < and <= are equivalent.
@@ -125,7 +125,7 @@ internal/daemon/roots.go	ast-v1:877ebe59c367d2a810f1e0c5af35b3e40fbd9c8ef7d81add
 internal/daemon/roots.go	ast-v1:97b0a350b832cc99d3eb75b2bf348d32acd6b48544792218d36ba027a64cb3a4	この符号は rootForPath の同じ長さの候補順だけを変える。path を含む root は同じ長さの別 root と両立せず、返す root を変えない
 internal/setup/message.go	ast-v1:a92297fd49cfed9993f1883a6e9997c4fdc97d46642859a7fdadd55e195e07f7	pairs の map 初期容量だけを決める除算で、乗算へ変えても収集する key/value と戻り値は変わらないため等価変異
 internal/sessions/scanner/parse.go	ast-v1:fce68a45baeb42b6d093187f4b2e30caabb0b38845706e17db43fdbc282efbe2	JSONL reader の初期 buffer サイズだけが変わり、ReadBytes の内容・解析結果・エラー契約は変わらないため等価変異
-internal/pool/branch.go	ast-v1:8ab1ec6b7e5034a2ac9fb726e1c1fdd8e228e333308e5ef0f51e5c66914c6b5c	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異
-internal/pool/branch.go	ast-v1:6b1342fc7dcf20dd150c56e9f51b466de29524dd7d1afc2e57c5a39ced3ded77	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異
+internal/pool/branch.go	ast-v1:40c742ffe881733f4fc5f59324cff0ae08711ef9d98b15c4e2e012185d9c0a80	fetchDefault と空の specs は fetch 経路へ入った直後の !ok 分岐でのみ評価され、反転しても後続は同じ MissingDefaultBranchError になるため等価変異
+internal/pool/branch.go	ast-v1:da6ab11e24d26ed3d87bb1f778e117438b34a10712d30e1533680aef2fc2e437	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異
 internal/archive/conflict.go	ast-v1:58c5b3b9fbd408d44c3af82626c3991c8626c5cc3a2e129666f61a0526681dc2	path が異なる場合だけ比較する分岐の内側なので、< と <= は同じ順序になる等価変異
 internal/archive/force_added.go	ast-v1:1114ad3a843732d34cf4b59029f0129fe4b8318c391fbeee07cbd79383f53d4e	tab が 0 の場合は変異前後どちらも空 metadata を field 数検査で拒否するため、< 0 と <= 0 は同じ動作になる等価変異
