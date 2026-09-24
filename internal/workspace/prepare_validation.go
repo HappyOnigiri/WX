@@ -86,6 +86,12 @@ func (p *Preparer) validateSlotWorktreeOwnershipForPhase(ctx context.Context, re
 }
 
 func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, repo discovery.Repository, target, oid, slotID string, slotStates, repositoryStates []string) error {
+	return p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID, slotStates, repositoryStates, false)
+}
+
+// validateExistingWorktreeOwned は requireRecordedIdentity のとき、open した identity を証明に渡して記録の欠落も失敗にする。
+// 偽のときは空の record を完了前に中断した run として許し、retry で収束させる。
+func (p *Preparer) validateExistingWorktreeOwned(ctx context.Context, repo discovery.Repository, target, oid, slotID string, slotStates, repositoryStates []string, requireRecordedIdentity bool) error {
 	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
@@ -149,6 +155,9 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 		if slotID == "" {
 			return nil
 		}
+		if requireRecordedIdentity {
+			return p.validateStateOwnershipWithIdentity(lockCtx, repo, target, slotID, targetIdentity, slotStates, repositoryStates)
+		}
 		proof, err := p.stateOwnershipProof(lockCtx, repo, target, slotID, slotStates, repositoryStates)
 		if err != nil {
 			return err
@@ -163,10 +172,10 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 }
 
 // ValidateReady は、保存済み READY worktree を安全に lease できる physical および Git-administrative invariant を検証する。
+// marker から slot を特定してから、marker・HEAD・slot の lock reason 付き登録・READY の記録を1回ずつ証明する。
+// 記録済み identity は空を許さない。READY まで進んだ slot は identity を記録済みで、空の record は所有権を証明しない。
+// commentlint:allow-long -- 証明の範囲と identity を必須にする理由を保守時に確認できるようにする
 func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository, target, oid string) error {
-	if err := p.ValidateOwnership(ctx, repo, target, oid); err != nil {
-		return err
-	}
 	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
@@ -179,7 +188,7 @@ func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
-	if err := p.validateStateOwnership(ctx, repo, target, slotID, []string{"READY"}, []string{"READY"}); err != nil {
+	if err := stateOwnershipFailure(p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID, []string{"READY"}, []string{"READY"}, true)); err != nil {
 		return err
 	}
 	return p.validateTrackedClean(ctx, target)
