@@ -96,6 +96,8 @@ func resolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		}
 	}
 	globalMatches := map[string]bool{}
+	// global の解決結果は下の repository ごとの解決で使い回し、同じ ref を2回引かない。
+	globalOIDs := map[string]string{}
 	if global != "" {
 		matched := 0
 		applicable := make([]discovery.Repository, 0, len(w.Repositories))
@@ -104,11 +106,14 @@ func resolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 				continue
 			}
 			applicable = append(applicable, repo)
-			_, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), global)
+			oid, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), global)
 			if err != nil {
 				return nil, err
 			}
 			globalMatches[string(repo.ID)] = ok
+			if ok {
+				globalOIDs[string(repo.ID)] = oid
+			}
 			if ok {
 				matched++
 			}
@@ -147,7 +152,9 @@ func resolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 			ok  bool
 			err error
 		)
-		if fetchDefault && len(specs) == 0 {
+		if cached, found := globalOIDs[string(repo.ID)]; found && branch == global {
+			oid, ok = cached, true
+		} else if fetchDefault && len(specs) == 0 {
 			oid, ok, err = resolveFetchedDefaultBranch(ctx, git, repo, branch, warn)
 		} else {
 			oid, ok, err = gitx.ResolveRef(ctx, git, string(repo.MainPath), branch)
