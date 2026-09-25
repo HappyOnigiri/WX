@@ -10,8 +10,10 @@ matrix_exclude_files=()
 if [[ -n ${HUNT_EXCLUDE_FILES:-} ]]; then read -r -a matrix_exclude_files <<<"$HUNT_EXCLUDE_FILES"; fi
 measurement_timeout=$(((HUNT_JOB_TIMEOUT - 20) * 60))
 # 変異で暴走したtest processがrunnerのメモリを使い切るとjobごと停止し、結果が残らない。
-# 上限はworker数ぶん同時に達しても空きメモリに収まる値とし、超えた変異はテスト失敗として扱わせる。
-mutation_address_space_limit=$((6 * 1024 * 1024 * 1024))
+# Gremlins配下のprocess全体の合計に上限を掛け、runner agentとOS用の余裕を残す。
+# 上限で停止した変異はテスト失敗として扱われる。
+memory_total_bytes=$(($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024))
+mutation_memory_limit=$((memory_total_bytes - 3 * 1024 * 1024 * 1024))
 failures=0
 
 write_failure() {
@@ -108,8 +110,11 @@ for package in "${packages[@]}"; do
     --output "$result" --execution-result "$execution" --diagnostics-dir "$diagnostics" \
     --shard "$HUNT_ID" --profile "$profile" --run-id "$HUNT_RUN_ID" \
     --attempt "$HUNT_RUN_ATTEMPT" --sha "$GITHUB_SHA" -- \
-    prlimit --as="$mutation_address_space_limit" -- .tools/bin/gremlins "${args[@]}"
+    bash .github/scripts/with-memory-cgroup.sh "mutation-hunt-$safe_profile" "$mutation_memory_limit" -- \
+    .tools/bin/gremlins "${args[@]}"
   runner_status=$?
+  cp "/sys/fs/cgroup/mutation-hunt-$safe_profile/memory.events" "$diagnostics/memory-events.txt" 2>/dev/null || true
+  cp "/sys/fs/cgroup/mutation-hunt-$safe_profile/memory.peak" "$diagnostics/memory-peak.txt" 2>/dev/null || true
   if [[ $runner_status -ne 0 ]]; then
     echo "::error title=Mutation measurement failed::$package ($(jq -r '.status' "$execution" 2>/dev/null || echo unknown))"
     failures=$((failures + 1))

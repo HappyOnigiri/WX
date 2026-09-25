@@ -156,6 +156,9 @@ test('heavy packages expand into deterministic file-shard matrix entries', () =>
   assert.deepEqual(plan.matrix.filter((item) => item.profiles === 'internal/cli').map((item) => item.id), [
     'package-internal-cli-1', 'package-internal-cli-2',
   ]);
+  assert.deepEqual(plan.matrix.filter((item) => item.profiles === 'internal/workspace').map((item) => item.id), [
+    'package-internal-workspace-1', 'package-internal-workspace-2', 'package-internal-workspace-3',
+  ]);
   assert.equal(plan.matrix.find((item) => item.id === 'package-cmd-wx').shard_count, 1);
 });
 
@@ -178,7 +181,8 @@ test('workflow wires planned shards, independent deadlines, and diagnostics', ()
   assert.match(runner, /-shard-files/u);
   assert.match(runner, /mutation-runner\.cjs/u);
   assert.match(runner, /HUNT_JOB_TIMEOUT - 20/u);
-  assert.match(runner, /prlimit --as="\$mutation_address_space_limit" -- \.tools\/bin\/gremlins/u);
+  assert.match(runner, /with-memory-cgroup\.sh "mutation-hunt-\$safe_profile" "\$mutation_memory_limit" -- \\\n\s+\.tools\/bin\/gremlins/u);
+  assert.doesNotMatch(runner, /prlimit/u);
   assert.match(runner, /duration-seconds/u);
   assert.match(workflow, /\.unweighted\[\]/u);
   assert.match(runner, /execution\.json/u);
