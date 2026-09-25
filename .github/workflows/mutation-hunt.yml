@@ -20,10 +20,6 @@ on:
         description: Gremlins timeout coefficient (1-100)
         required: false
         default: "12"
-      job-timeout:
-        description: Per-shard job timeout in minutes (30-360)
-        required: false
-        default: "180"
       mutators:
         description: Mutator set (boundary or default)
         required: false
@@ -50,7 +46,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       shards: ${{ steps.plan.outputs.shards }}
-      timeout: ${{ steps.plan.outputs.timeout }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -67,7 +62,6 @@ jobs:
           HUNT_GROUPS: ${{ inputs.groups }}
           HUNT_WORKERS: ${{ inputs.workers }}
           HUNT_TIMEOUT_COEFFICIENT: ${{ inputs.timeout-coefficient }}
-          HUNT_JOB_TIMEOUT: ${{ inputs.job-timeout }}
           HUNT_MUTATORS: ${{ inputs.mutators }}
         run: |
           set -euo pipefail
@@ -75,11 +69,9 @@ jobs:
           case "$HUNT_GROUPS" in ''|*[!0-9]*) fail "groups must be a number";; esac
           case "$HUNT_WORKERS" in ''|*[!0-9]*) fail "workers must be a number";; esac
           case "$HUNT_TIMEOUT_COEFFICIENT" in ''|*[!0-9]*) fail "timeout-coefficient must be a number";; esac
-          case "$HUNT_JOB_TIMEOUT" in ''|*[!0-9]*) fail "job-timeout must be a number";; esac
           [ "$HUNT_GROUPS" -ge 1 ] && [ "$HUNT_GROUPS" -le 20 ] || fail "groups must be 1-20"
           [ "$HUNT_WORKERS" -ge 1 ] && [ "$HUNT_WORKERS" -le 16 ] || fail "workers must be 1-16"
           [ "$HUNT_TIMEOUT_COEFFICIENT" -ge 1 ] && [ "$HUNT_TIMEOUT_COEFFICIENT" -le 100 ] || fail "timeout-coefficient must be 1-100"
-          [ "$HUNT_JOB_TIMEOUT" -ge 30 ] && [ "$HUNT_JOB_TIMEOUT" -le 360 ] || fail "job-timeout must be 30-360"
           case "$HUNT_MUTATORS" in boundary|default) ;; *) fail "mutators must be boundary or default";; esac
 
           module=$(go list -m)
@@ -125,14 +117,14 @@ jobs:
           {
             echo "matrix=$matrix"
             echo "shards=$matrix"
-            echo "timeout=$HUNT_JOB_TIMEOUT"
           } >>"$GITHUB_OUTPUT"
 
   hunt:
     name: ${{ matrix.id }}
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
+    # hosted runnerのjob上限に固定し、測定期限はrun-mutation-shard.shがこの値から逆算する。
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -167,7 +159,7 @@ jobs:
           HUNT_SHARD_COUNT: ${{ matrix.shard_count }}
           HUNT_SHARD_INDEX: ${{ matrix.shard_index }}
           HUNT_SHARD_FILES: ${{ matrix.shard_files }}
-          HUNT_JOB_TIMEOUT: ${{ inputs.job-timeout }}
+          HUNT_JOB_TIMEOUT: "360"
         run: |
           bash .github/scripts/run-mutation-shard.sh
 
