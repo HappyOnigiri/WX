@@ -18,7 +18,7 @@ const DEDICATED_PACKAGES = new Set([
 // 重量級パッケージはhunt側でdry-runの変異数を計測してファイル分割する。
 const DYNAMIC_SHARD_COUNTS = Object.freeze({
   'internal/cli': 2,
-  'internal/workspace': 2,
+  'internal/workspace': 3,
 });
 
 // archive の production source は固定の shard 定義で管理し、追加・削除を自動で吸収しない。
