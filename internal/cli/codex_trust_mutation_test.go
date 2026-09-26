@@ -1,9 +1,35 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestCodexNoDaemonArgsRespectsOptionSeparator(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "explicit flag after ordinary option",
+			args: []string{"--model", "o3", "--no-daemon", "--", "prompt"},
+			want: []string{"--model", "o3", "--no-daemon", "--", "prompt"},
+		},
+		{
+			name: "flag-like prompt after separator",
+			args: []string{"--", "--no-daemon", "prompt"},
+			want: []string{"--no-daemon", "--", "--no-daemon", "prompt"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexNoDaemonArgs("codex", true, tt.args); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("codexNoDaemonArgs(%v)=%v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCodexTrustMutationBoundariesKeepExactConfigSizeTrusted(t *testing.T) {
 	home := t.TempDir()

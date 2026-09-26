@@ -125,7 +125,12 @@ func TestMutationLaunchdManagedProcessHelper(t *testing.T) {
 	if err := os.Setenv("XPC_SERVICE_NAME", launchd.Label); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(resultPath, []byte(boolString(launchdManagedProcess())), 0o600); err != nil {
+	// 親プロセスが書き込み途中の空ファイルを結果として読まないよう、完成後に公開する。
+	partialPath := resultPath + ".partial"
+	if err := os.WriteFile(partialPath, []byte(boolString(launchdManagedProcess())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(partialPath, resultPath); err != nil {
 		t.Fatal(err)
 	}
 }
