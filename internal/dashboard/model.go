@@ -100,6 +100,7 @@ type model struct {
 	tab          int
 	selected     int
 	offset       int
+	statusOffset int
 	width        int
 	height       int
 	mode         mode
@@ -207,6 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
+		m.statusOffset = min(m.statusOffset, m.maxStatusOffset())
 		if m.mode == modeResult {
 			m.offset = min(m.offset, m.maxResultOffset())
 		} else {
@@ -220,6 +222,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status, m.statusErr = strings.TrimSpace(msg.text), ""
 		}
+		m.statusOffset = min(m.statusOffset, m.maxStatusOffset())
 	case tickMsg:
 		if m.tab == 0 && !m.loading {
 			m.loading = true
@@ -365,9 +368,17 @@ func (m model) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "ctrl+n":
 		m.move(1)
 	case "pgup":
-		m.move(-m.visibleRows())
+		if m.tab == 0 {
+			m.move(-m.statusPageRows())
+		} else {
+			m.move(-m.visibleRows())
+		}
 	case "pgdown":
-		m.move(m.visibleRows())
+		if m.tab == 0 {
+			m.move(m.statusPageRows())
+		} else {
+			m.move(m.visibleRows())
+		}
 	case "r":
 		if m.tab == 0 && !m.loading {
 			m.loading = true
@@ -432,12 +443,12 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *model) changeTab(delta int) {
 	m.tab = (m.tab + delta + len(tabIDs)) % len(tabIDs)
 	m.selected, m.offset, m.mode, m.input, m.settingsOpen = 0, 0, modeList, "", false
+	m.statusOffset = 0
 }
 
 func (m *model) move(delta int) {
 	if m.tab == 0 {
-		// 状態画面は本文を offset で送らないため、更新項目の範囲内で選択だけを動かす。
-		m.selected = min(max(0, m.selected+delta), max(0, m.itemCount()-1))
+		m.statusOffset = min(max(0, m.statusOffset+delta), m.maxStatusOffset())
 		return
 	}
 	count := m.itemCount()

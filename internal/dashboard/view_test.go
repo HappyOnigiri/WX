@@ -254,6 +254,29 @@ func TestStatusViewKeepsTheUpdateItemVisibleOnALongStatus(t *testing.T) {
 	}
 }
 
+func TestStatusViewUsesAvailableHeightAndShowsScrollPosition(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.loading = false
+	m.width, m.height = 100, 18
+	m.status = strings.TrimSuffix(strings.Repeat("status line\n", 30), "\n")
+	plain := xansi.Strip(m.View().Content)
+	lines := strings.Split(plain, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("view has %d lines, want terminal height %d", len(lines), m.height)
+	}
+	if !strings.Contains(plain, "status line\n  ↓ lines 1–") {
+		t.Fatalf("first page has no visible continuation marker: %q", plain)
+	}
+	if !strings.Contains(lines[len(lines)-1], "PgUp/PgDn scroll") {
+		t.Fatalf("footer has no scroll hint: %q", lines[len(lines)-1])
+	}
+	m.statusOffset = m.maxStatusOffset()
+	plain = xansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "status line\n  ↑ lines ") || !strings.Contains(plain, "–30 / 30") {
+		t.Fatalf("last page has no end marker: %q", plain)
+	}
+}
+
 // TestStatusViewMarksTheFourSecondBoundary は、4 秒ちょうどの応答を古い表示へ分類する
 // 境界を守る。丸め後の時刻を使うため、実時間の端数は 100ms だけ手前に置く。
 func TestStatusViewMarksTheFourSecondBoundary(t *testing.T) {
