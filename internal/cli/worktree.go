@@ -196,7 +196,7 @@ func (c Client) directHookEnvironment(ctx context.Context, sourceCWD, root strin
 }
 
 func runDirectAgentFrom(ctx context.Context, cwd, agent string, args, env []string) int {
-	cmd := exec.CommandContext(ctx, agent, args...)
+	cmd := exec.CommandContext(ctx, agent, codexNoDaemonArgs(agent, args)...)
 	cmd.Dir = cwd
 	cmd.Env = childEnvironment(os.Environ(), env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

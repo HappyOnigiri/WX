@@ -73,6 +73,27 @@ func TestDirectAgentPreservesCWDArgumentsAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestDirectCodexDisablesDaemon(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	record := filepath.Join(root, "argv")
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WX_TEST_ARGV_RECORD\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WX_TEST_ARGV_RECORD", record)
+	if exit := runDirectAgentFrom(context.Background(), root, "codex", []string{"--model", "gpt-6-luna"}, nil); exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "--no-daemon\n--model\ngpt-6-luna\n" {
+		t.Fatalf("argv=%q", got)
+	}
+}
+
 func TestRunAgentWithPolicyFromUsesExplicitCWDWithoutChangingProcess(t *testing.T) {
 	original, err := os.Getwd()
 	if err != nil {

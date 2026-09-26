@@ -152,7 +152,7 @@ trust_level = "trusted"
 	if !ok {
 		t.Fatal("failed to construct expected override")
 	}
-	want := append([]string{"--no-daemon", "-c", override}, base...)
+	want := append([]string{"-c", override}, base...)
 	if got := codexTrustArgs("codex", "", lease, base); !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv=%v, want %v", got, want)
 	}
@@ -174,7 +174,7 @@ trust_level = "trusted"
 		})
 	}
 
-	if got := codexTrustArgs("codex", "", lease, []string{"--", `-c projects={}`}); len(got) != 5 || got[0] != "--no-daemon" || got[1] != "-c" {
+	if got := codexTrustArgs("codex", "", lease, []string{"--", `-c projects={}`}); len(got) != 4 || got[0] != "-c" {
 		t.Fatalf("prompt arguments incorrectly controlled override: %v", got)
 	}
 	for _, test := range []struct {

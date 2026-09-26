@@ -35,6 +35,9 @@ func TestLaunchSendsLegacyResolveAndLeasePayload(t *testing.T) {
 	if exit := client.RunAgent(context.Background(), "codex", nil, nil, false); exit != 0 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
+	if got := readLaunchRecord(t, os.Getenv("WX_TEST_LAUNCH_RECORD"))["args"]; got != "--no-daemon" {
+		t.Fatalf("Codex argv=%q, want --no-daemon without trust override", got)
+	}
 	raw := handler.paramsFor("ResolveAndLease")
 	var params rpc.ResolveAndLeaseParams
 	if err := json.Unmarshal(raw, &params); err != nil {

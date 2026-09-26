@@ -24,6 +24,23 @@ type codexTrustConfig struct {
 	Projects map[string]codexProjectConfig `toml:"projects"`
 }
 
+// codexNoDaemonArgs は Codex の起動を共有 daemon から切り離す。
+// trust 設定の継承可否とは独立して適用する。
+func codexNoDaemonArgs(agent string, args []string) []string {
+	if agent != "codex" {
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--no-daemon" {
+			return args
+		}
+	}
+	return append([]string{"--no-daemon"}, args...)
+}
+
 // codexTrustArgs は、明示的に trusted とされた source workspace だけを、
 // multi-repository の lease root へプロセス限定で継承する argv を返す。
 // 設定を読めない場合や利用者が trust の解決方法を指定した場合は、元の argv を返す。
@@ -38,7 +55,7 @@ func codexTrustArgs(agent, leaseKind string, lease daemon.Lease, args []string) 
 	if !ok {
 		return args
 	}
-	return append([]string{"--no-daemon", "-c", override}, args...)
+	return append([]string{"-c", override}, args...)
 }
 
 // codexSourceWorkspaceTrusted は CODEX_HOME を Codex と同じ優先順位で解決し、
