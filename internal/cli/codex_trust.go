@@ -38,7 +38,7 @@ func codexTrustArgs(agent, leaseKind string, lease daemon.Lease, args []string) 
 	if !ok {
 		return args
 	}
-	return append([]string{"-c", override}, args...)
+	return append([]string{"--no-daemon", "-c", override}, args...)
 }
 
 // codexSourceWorkspaceTrusted は CODEX_HOME を Codex と同じ優先順位で解決し、
