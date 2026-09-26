@@ -26,8 +26,8 @@ type codexTrustConfig struct {
 
 // codexNoDaemonArgs は Codex の起動を共有 daemon から切り離す。
 // trust 設定の継承可否とは独立して適用する。
-func codexNoDaemonArgs(agent string, args []string) []string {
-	if agent != "codex" {
+func codexNoDaemonArgs(agent string, enabled bool, args []string) []string {
+	if agent != "codex" || !enabled {
 		return args
 	}
 	for _, arg := range args {

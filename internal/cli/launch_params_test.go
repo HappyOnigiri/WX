@@ -55,6 +55,28 @@ func TestLaunchSendsLegacyResolveAndLeasePayload(t *testing.T) {
 	}
 }
 
+func TestLaunchOmitsNoDaemonWhenDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	root := t.TempDir()
+	disabled := false
+	cfg := config.Defaults()
+	cfg.Workspaces[root] = config.Workspace{Agent: config.WorkspaceAgent{CodexNoDaemon: &disabled}}
+	lease := daemon.Lease{SessionID: "session", Token: "token", Path: root, SourceWorkspace: root, Ready: true}
+	client, stop := serveResumeLaunchRPCWithConfig(t, &resumeLaunchHandler{lease: lease}, cfg)
+	defer stop()
+	if exit := client.RunAgent(context.Background(), "codex", []string{"--model", "gpt-6-luna"}, nil, false); exit != 0 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	if got := readLaunchRecord(t, record)["args"]; got != "--model gpt-6-luna" {
+		t.Fatalf("Codex argv=%q with no-daemon disabled", got)
+	}
+}
+
 func TestLaunchSendsLegacyResumePayload(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -138,9 +138,12 @@ var configCatalog = map[string]Entry{
 	"config.includes.default_agent_rules.description": {EN: "Whether the standard agent instruction files that Git does not track, such as CLAUDE.local.md, are copied from the source repository into the worktree. Tracked files arrive with the checkout and are unaffected.", JA: "CLAUDE.local.md のように Git が追跡しない標準のエージェント指示ファイルを、ソースリポジトリから worktree へコピーするかどうかです。追跡されているファイルは checkout で入るため、この設定の対象外です。"},
 	"config.includes.default_agent_rules.impact":      {EN: "When disabled, only the paths configured explicitly are placed.", JA: "無効にすると、明示的に設定した path だけを配置します。"},
 
-	"config.agent.add_dir.name":        {EN: "Extra directories given to the agent", JA: "エージェントへ渡す追加ディレクトリ"},
-	"config.agent.add_dir.description": {EN: "When wx passes the repositories of a workspace to the agent as additional directories it may read: always, only when working in a worktree (worktree), or never (off).", JA: "workspace のリポジトリを、エージェントが読める追加ディレクトリとして渡す条件です。常に渡す（always）、worktree で作業するときだけ渡す（worktree）、渡さない（off）から選びます。"},
-	"config.agent.add_dir.impact":      {EN: "Changes which repositories and files the agent can read.", JA: "エージェントが読めるリポジトリとファイルが変わります。"},
+	"config.agent.add_dir.name":                {EN: "Extra directories given to the agent", JA: "エージェントへ渡す追加ディレクトリ"},
+	"config.agent.add_dir.description":         {EN: "When wx passes the repositories of a workspace to the agent as additional directories it may read: always, only when working in a worktree (worktree), or never (off).", JA: "workspace のリポジトリを、エージェントが読める追加ディレクトリとして渡す条件です。常に渡す（always）、worktree で作業するときだけ渡す（worktree）、渡さない（off）から選びます。"},
+	"config.agent.add_dir.impact":              {EN: "Changes which repositories and files the agent can read.", JA: "エージェントが読めるリポジトリとファイルが変わります。"},
+	"config.agent.codex_no_daemon.name":        {EN: "Run Codex without the shared daemon", JA: "Codex の共有 daemon を使わない"},
+	"config.agent.codex_no_daemon.description": {EN: "Whether wx passes --no-daemon when starting Codex. Enabled by default.", JA: "wx が Codex を起動するときに --no-daemon を渡すかどうかです。既定では有効です。"},
+	"config.agent.codex_no_daemon.impact":      {EN: "When disabled, Codex may connect to its shared daemon.", JA: "無効にすると、Codex が共有 daemon に接続する場合があります。"},
 
 	"config.update.auto_check.name":        {EN: "Check for new versions", JA: "新しいバージョンを確認する"},
 	"config.update.auto_check.description": {EN: "Whether the daemon occasionally asks GitHub whether a newer wx has been released, so that the status screen and an interactive launch can tell you about it.", JA: "新しい wx が公開されていないかを daemon が時々 GitHub に尋ねるかどうかです。状態画面と対話的な起動でお知らせするために使います。"},

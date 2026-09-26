@@ -30,7 +30,8 @@
    multi-repository workspace の Codex 起動だけは、source workspace の明示的な `trusted` 設定を確認できた場合に限り、source と ephemeral lease root の trust をプロセス限定の `-c` override で継承する。
    設定を読めない、判定できない、または利用者が `--profile` / `-c` で trust を指定した場合は trust override を追加せず、Codex 本来の確認へ戻す。
    slot の path は設定ファイルへ書き込まない。
-   Codex は trust 継承の成否に関係なく共有 daemon を使わずに起動し、設定の解決を起動ごとに行う。
+   Codex は trust 継承の成否に関係なく、既定で共有 daemon を使わずに起動する。
+   `agent.codex_no_daemon: false` を指定した workspace では Codex 自身の daemon 利用方針に戻す。
 
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    `repository_defaults.readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動する。
