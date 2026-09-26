@@ -49,6 +49,11 @@ func (m model) View() tea.View {
 		lines = append(lines, m.operationView()...)
 	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
+	if m.tab == 0 && m.mode == modeList {
+		for len(lines) < m.height-2 {
+			lines = append(lines, "")
+		}
+	}
 	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(m.footer(), m.width)+reset)
 	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = true
@@ -67,9 +72,19 @@ func (m model) footer() string {
 	}
 	switch {
 	case m.tab == 0 && m.mode == modeList && m.opts.Update.Available:
-		return hint("dashboard.footer.tabs_full", "dashboard.footer.refresh", "dashboard.footer.select", "dashboard.footer.enter_confirm", "dashboard.footer.esc_exit")
+		ids := []string{}
+		if m.maxStatusOffset() > 0 {
+			ids = append(ids, "dashboard.footer.scroll_status")
+		}
+		ids = append(ids, "dashboard.footer.tabs_full", "dashboard.footer.refresh")
+		return hint(append(ids, "dashboard.footer.enter_confirm", "dashboard.footer.esc_exit")...)
 	case m.tab == 0 && m.mode == modeList:
-		return hint("dashboard.footer.tabs_full", "dashboard.footer.refresh", "dashboard.footer.esc_exit")
+		ids := []string{}
+		if m.maxStatusOffset() > 0 {
+			ids = append(ids, "dashboard.footer.scroll_status")
+		}
+		ids = append(ids, "dashboard.footer.tabs_full", "dashboard.footer.refresh")
+		return hint(append(ids, "dashboard.footer.esc_exit")...)
 	case m.tab == 2 && m.mode == modeList && m.settingsOpen:
 		return hint("dashboard.footer.env_back", "dashboard.footer.tabs_right", "dashboard.footer.select", "dashboard.footer.enter_edit")
 	case m.tab == 2 && m.mode == modeList:
@@ -117,12 +132,34 @@ func (m model) breadcrumb() string {
 }
 
 func (m model) statusView() []string {
+	lines, body, update := m.statusParts()
+	pageRows := m.statusPageRowsFor(len(lines), len(update), len(body))
+	start := min(m.statusOffset, max(0, len(body)-pageRows))
+	end := min(len(body), start+pageRows)
+	lines = append(lines, body[start:end]...)
+	if len(body) > pageRows {
+		direction := "↓"
+		if start > 0 {
+			direction = "↑"
+			if end < len(body) {
+				direction = "↑↓"
+			}
+		}
+		lines = append(lines, dim+"  "+m.tf("dashboard.status_more", map[string]any{
+			"Direction": direction, "Start": start + 1, "End": end, "Total": len(body),
+		})+reset)
+	}
+	return append(lines, update...)
+}
+
+func (m model) statusParts() ([]string, []string, []string) {
 	lines := []string{accent + m.t("dashboard.status") + reset}
 	// 動いている wx の版を見出しの直後へ出す。daemon 側の版は status 本文が持つため重ねない。
 	lines = append(lines, dim+"  "+m.tf("dashboard.version", map[string]any{"Version": m.opts.Version})+reset)
+	update := m.updateLines()
 	if m.loading && m.status == "" {
 		// 読み込み中でも更新項目は出す。footer と itemCount が項目ありと言う間に画面から消さない。
-		return append(append(lines, "", "  "+m.t("dashboard.loading")), m.updateLines()...)
+		return append(lines, ""), []string{"  " + m.t("dashboard.loading")}, update
 	}
 	if m.statusErr != "" {
 		failure := m.tf("dashboard.refresh_failed", map[string]any{"Error": truncate(m.statusErr, max(1, m.width-18))})
@@ -140,17 +177,33 @@ func (m model) statusView() []string {
 		}
 		lines = append(lines, dim+"  "+freshness+reset, "")
 	}
-	// 本文の行数は、実際に積んだ見出し行と更新項目の行から引く。
-	// 固定値で引くと行を足すたびに末尾が黙って欠ける。
-	update := m.updateLines()
-	statusLines := strings.Split(m.status, "\n")
-	end := min(len(statusLines), max(1, m.visibleRows()-len(lines)-len(update)))
-	if len(statusLines) == 1 && statusLines[0] == "" {
-		lines = append(lines, "  "+m.t("dashboard.no_status"))
-	} else {
-		lines = append(lines, statusLines[:end]...)
+	if m.status == "" {
+		return lines, []string{"  " + m.t("dashboard.no_status")}, update
 	}
-	return append(lines, update...)
+	return lines, strings.Split(m.status, "\n"), update
+}
+
+// statusPageRowsFor はタブ・breadcrumb・footer と、現在表示する固定行を除いた本文の高さである。
+// 本文が溢れる場合だけ位置表示の 1 行を確保する。
+func (m model) statusPageRowsFor(prefix, update, body int) int {
+	rows := m.height - 5 - prefix - update
+	if m.opts.Notice != "" {
+		rows -= 2
+	}
+	if body > rows {
+		rows--
+	}
+	return max(1, rows)
+}
+
+func (m model) statusPageRows() int {
+	prefix, body, update := m.statusParts()
+	return m.statusPageRowsFor(len(prefix), len(update), len(body))
+}
+
+func (m model) maxStatusOffset() int {
+	_, body, _ := m.statusParts()
+	return max(0, len(body)-m.statusPageRows())
 }
 
 // updateLines は状態画面の更新項目である。menuLines を通らないため、選択行の強調はここで書く。

@@ -170,6 +170,8 @@ var catalog = map[string]Entry{
 	"dashboard.footer.select":         {EN: "↑/↓ select", JA: "↑/↓ で選択"},
 	"dashboard.footer.select_env":     {EN: "↑/↓ select environment", JA: "↑/↓ で環境を選択"},
 	"dashboard.footer.scroll":         {EN: "↑/↓ scroll result", JA: "↑/↓ で結果をスクロール"},
+	"dashboard.footer.scroll_status":  {EN: "↑/↓ or PgUp/PgDn scroll", JA: "↑/↓ または PgUp/PgDn でスクロール"},
+	"dashboard.status_more":           {EN: "{{.Direction}} lines {{.Start}}–{{.End}} / {{.Total}}", JA: "{{.Direction}} {{.Start}}–{{.End}} / {{.Total}} 行"},
 	"dashboard.footer.enter_confirm":  {EN: "Enter confirm", JA: "Enter で確定"},
 	"dashboard.footer.enter_open":     {EN: "Enter open", JA: "Enter で開く"},
 	"dashboard.footer.enter_edit":     {EN: "Enter edit", JA: "Enter で編集"},

@@ -113,13 +113,26 @@ func TestModelKeepsLastStatusWhenRefreshFails(t *testing.T) {
 	}
 }
 
-func TestStatusArrowKeysDoNotScroll(t *testing.T) {
+func TestStatusScrollKeysAndResize(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: config.Defaults()})
-	m.status = strings.Repeat("line\n", 30)
+	m.loading = false
+	m.status = strings.TrimSuffix(strings.Repeat("line\n", 30), "\n")
+	m.height = 14
 	m.offset = 4
 	updated, _ := m.Update(key(tea.KeyDown))
-	if got := updated.(model).offset; got != 4 {
-		t.Fatalf("status offset=%d, want unchanged", got)
+	m = updated.(model)
+	if m.statusOffset != 1 || m.offset != 4 {
+		t.Fatalf("status offset=%d menu offset=%d, want 1 and 4", m.statusOffset, m.offset)
+	}
+	updated, _ = m.Update(key(tea.KeyPgDown))
+	m = updated.(model)
+	if m.statusOffset != 1+m.statusPageRows() {
+		t.Fatalf("page down offset=%d, page rows=%d", m.statusOffset, m.statusPageRows())
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
+	m = updated.(model)
+	if m.statusOffset != 0 {
+		t.Fatalf("resize did not clamp status offset: %d", m.statusOffset)
 	}
 }
 
