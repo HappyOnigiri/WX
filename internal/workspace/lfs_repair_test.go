@@ -534,6 +534,69 @@ func TestEnsureLFSCacheDirectoryAcceptsConcurrentCreation(t *testing.T) {
 	}
 }
 
+type lfsCacheDirectoryRaceRoot struct {
+	path       string
+	lstatCalls int
+}
+
+func (root *lfsCacheDirectoryRaceRoot) Lstat(name string) (os.FileInfo, error) {
+	root.lstatCalls++
+	if root.lstatCalls == 1 {
+		return nil, os.ErrNotExist
+	}
+	return os.Lstat(filepath.Join(root.path, name))
+}
+
+func (*lfsCacheDirectoryRaceRoot) Mkdir(string, os.FileMode) error {
+	return os.ErrExist
+}
+
+// Mkdir と Lstat の間で別の作成者が先に登録した directory だけを再利用する。
+func TestEnsureLFSCacheDirectoryValidatesDirectoryAfterMkdirRace(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		prepare func(*testing.T, string) error
+		wantErr bool
+	}{
+		{
+			name: "physical directory",
+			prepare: func(_ *testing.T, path string) error {
+				return os.Mkdir(path, 0o700)
+			},
+		},
+		{
+			name: "regular file",
+			prepare: func(_ *testing.T, path string) error {
+				return os.WriteFile(path, []byte("file"), 0o600)
+			},
+			wantErr: true,
+		},
+		{
+			name: "symlink",
+			prepare: func(t *testing.T, path string) error {
+				return os.Symlink(t.TempDir(), path)
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			common := t.TempDir()
+			if err := test.prepare(t, filepath.Join(common, "lfs")); err != nil {
+				t.Fatal(err)
+			}
+			root := &lfsCacheDirectoryRaceRoot{path: common}
+			err := ensureLFSCacheDirectory(root, "lfs")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("ensureLFSCacheDirectory() err=%v, want error=%t", err, test.wantErr)
+			}
+			if root.lstatCalls != 2 {
+				t.Fatalf("Lstat calls=%d, want initial miss and post-Mkdir inspection", root.lstatCalls)
+			}
+		})
+	}
+}
+
 // 診断が cache 欠落と判定した後に健全な object が現れた場合は、書き直さず成功として扱う。
 func TestLFSRepairKeepsCacheObjectThatAppearedAfterDiagnosis(t *testing.T) {
 	t.Parallel()

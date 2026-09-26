@@ -218,7 +218,12 @@ func cacheLFSRelativePath(oid string) (string, bool) {
 	return filepath.Join(directory, leaf), true
 }
 
-func ensureLFSCacheDirectory(root *os.Root, relative string) error {
+type lfsCacheDirectoryRoot interface {
+	Lstat(name string) (os.FileInfo, error)
+	Mkdir(name string, perm os.FileMode) error
+}
+
+func ensureLFSCacheDirectory(root lfsCacheDirectoryRoot, relative string) error {
 	clean, err := safeRelative(relative)
 	if err != nil {
 		return err
