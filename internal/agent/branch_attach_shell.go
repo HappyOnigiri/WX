@@ -502,8 +502,10 @@ func policySegment(parts []commandWord, base *string) (invocation policyGitInvoc
 		if !part.quoted && (part.value == "pushd" || part.value == "popd") {
 			return policyGitInvocation{}, false, false
 		}
-		if nestedShellNames[filepath.Base(part.value)] && index+1 < len(parts) && strings.HasPrefix(parts[index+1].value, "-") {
-			return policyGitInvocation{}, false, false
+		if nestedShellNames[filepath.Base(part.value)] {
+			if index+1 >= len(parts) || strings.HasPrefix(parts[index+1].value, "-") {
+				return policyGitInvocation{}, false, false
+			}
 		}
 		for _, prefix := range unsafeGitEnvironmentPrefixes {
 			if strings.HasPrefix(part.value, prefix) {

@@ -32,6 +32,55 @@ func policyTokenString(tokens []policyToken) string {
 	return strings.Join(parts, " ")
 }
 
+func TestLexPolicyCommandKeepsCommandAfterComment(t *testing.T) {
+	command := strings.Join([]string{"git", "status", "# ignore\ngit", "switch", "-c", "feature"}, " ")
+	tokens, ok := lexPolicyCommand(command)
+	if !ok {
+		t.Fatal("command was not well formed")
+	}
+	want := strings.Join([]string{"git", "status", ";", "git", "switch", "-c", "feature"}, " ")
+	if got := policyTokenString(tokens); got != want {
+		t.Fatalf("tokens=%q, want %q", got, want)
+	}
+}
+
+func TestLexPolicyCommandTracksNestedQuotedSubstitution(t *testing.T) {
+	inner := "$" + "(" + "printf y" + ")"
+	outer := "$" + "(" + "printf x " + inner + ")"
+	command := `echo "` + outer + `"`
+	if _, ok := lexPolicyCommand(command); !ok {
+		t.Fatal("nested command substitution was not well formed")
+	}
+}
+
+func TestPolicySegmentRejectsWrappedShellWithoutCommand(t *testing.T) {
+	base := t.TempDir()
+	parts := []commandWord{{value: "su" + "do"}, {value: "ba" + "sh"}}
+	if _, isGit, ok := policySegment(parts, &base); ok || isGit {
+		t.Fatal("a wrapped shell without a command was resolved")
+	}
+}
+
+func TestIsDigitsIncludesASCIIEndpoints(t *testing.T) {
+	for value, want := range map[string]bool{
+		"0":  true,
+		"9":  true,
+		"/":  false,
+		":":  false,
+		"09": true,
+	} {
+		if got := isDigits(value); got != want {
+			t.Errorf("isDigits(%q)=%v, want %v", value, got, want)
+		}
+	}
+}
+
+func TestLexPolicyCommandRejectsMissingEmptyHeredocTerminator(t *testing.T) {
+	if _, ok := lexPolicyCommand("cat <<''\nbody\n"); ok {
+		t.Fatal("heredoc without its empty terminator was accepted")
+	}
+}
+
 func TestLexPolicyCommandStructure(t *testing.T) {
 	tests := []struct {
 		command, want string

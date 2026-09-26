@@ -129,3 +129,4 @@ internal/pool/branch.go	ast-v1:40c742ffe881733f4fc5f59324cff0ae08711ef9d98b15c4e
 internal/pool/branch.go	ast-v1:da6ab11e24d26ed3d87bb1f778e117438b34a10712d30e1533680aef2fc2e437	branch が空なら先行する branch == "" の検査で return 済みで、この分岐へ到達する repo.DefaultBranch == "" の経路がないため等価変異
 internal/archive/conflict.go	ast-v1:58c5b3b9fbd408d44c3af82626c3991c8626c5cc3a2e129666f61a0526681dc2	path が異なる場合だけ比較する分岐の内側なので、< と <= は同じ順序になる等価変異
 internal/archive/force_added.go	ast-v1:1114ad3a843732d34cf4b59029f0129fe4b8318c391fbeee07cbd79383f53d4e	tab が 0 の場合は変異前後どちらも空 metadata を field 数検査で拒否するため、< 0 と <= 0 は同じ動作になる等価変異
+internal/agent/branch_attach_shell.go	ast-v1:a3c3a8f327c99e799f96d418a19625286fbccca4fdf2799db10302ede6bc6d81	IndexAnyで位置0に一致するのは区切り文字だけで、`}`でも本文が空となり、end < 0 と end <= 0 は同じfalseを返す等価変異

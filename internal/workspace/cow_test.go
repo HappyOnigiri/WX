@@ -50,6 +50,63 @@ func cowWrite(t *testing.T, r *os.Root, name, data string) {
 	}
 }
 
+func TestCompactsWorktreeForMode(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		mode         string
+		cowSupported bool
+		want         bool
+	}{
+		{name: "copy on supported platform", mode: config.CopyModeCopy, cowSupported: true},
+		{name: "auto on supported platform", mode: config.CopyModeAuto, cowSupported: true, want: true},
+		{name: "cow on supported platform", mode: config.CopyModeCOW, cowSupported: true, want: true},
+		{name: "auto on unsupported platform", mode: config.CopyModeAuto},
+		{name: "cow on unsupported platform", mode: config.CopyModeCOW},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := compactsWorktreeForMode(test.mode, test.cowSupported); got != test.want {
+				t.Fatalf("compactsWorktreeForMode(%q, %v)=%v, want %v", test.mode, test.cowSupported, got, test.want)
+			}
+		})
+	}
+}
+
+func TestReadCOWDirectoryNamesReturnsEveryEntry(t *testing.T) {
+	t.Parallel()
+	destination, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = destination.Close() })
+	if err := destination.Mkdir("candidate", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"first": true, "second": true, "third": true}
+	for name := range want {
+		if err := destination.WriteFile(filepath.Join("candidate", name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	names, err := readCOWDirectoryNames(destination, "candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != len(want) {
+		t.Fatalf("directory entries=%v, want %d entries", names, len(want))
+	}
+	for _, name := range names {
+		if !want[name] {
+			t.Errorf("unexpected directory entry %q", name)
+		}
+		delete(want, name)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing directory entries: %v", want)
+	}
+}
+
 func TestCOWSkipsDifferentAndMissingFiles(t *testing.T) {
 	t.Parallel()
 	if !cowAvailable() {
