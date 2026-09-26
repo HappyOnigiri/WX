@@ -133,7 +133,7 @@ func TestLogLFSOptimizationWarning(t *testing.T) {
 }
 
 // TestSnapshotAttemptsLFSCompactionForChangedPointer は、snapshot で新しく現れた LFS pointer を
-// cache 最適化へ渡し、利用できない mode では理由を記録することを確認する。
+// cache 最適化へ渡し、copy mode の正常な skip を失敗として記録しないことを確認する。
 func TestSnapshotAttemptsLFSCompactionForChangedPointer(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
 	manager.Preparer.Config.Storage.CopyMode = config.CopyModeCopy
@@ -151,7 +151,11 @@ func TestSnapshotAttemptsLFSCompactionForChangedPointer(t *testing.T) {
 	if got := gitCommand(t, repository, "show", snapshot.WorktreeOID+":weights.bin"); got != strings.TrimSuffix(pointer, "\n") {
 		t.Fatalf("snapshot pointer=%q, want %q", got, strings.TrimSuffix(pointer, "\n"))
 	}
-	if output := logged.String(); !strings.Contains(output, "LFS cache CoW skipped") || !strings.Contains(output, "candidates=1") {
+	output := logged.String()
+	if !strings.Contains(output, "LFS cache CoW skipped") || !strings.Contains(output, "candidates=1") {
 		t.Fatalf("changed LFS pointer did not reach the skip diagnostic: %s", output)
+	}
+	if strings.Contains(output, "LFS cache optimization skipped") {
+		t.Fatalf("successful LFS CoW skip was reported as a compaction failure: %s", output)
 	}
 }
