@@ -24,6 +24,12 @@ func (readyStateRejectingOwnershipValidator) ValidateWorktreeOwnership(_ context
 	return state.WorktreeOwnership{}, nil
 }
 
+type rejectingOwnershipValidator struct{}
+
+func (rejectingOwnershipValidator) ValidateWorktreeOwnership(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	return state.WorktreeOwnership{}, errors.New("state ownership rejected")
+}
+
 // TestValidateReadyEnforcesItsOwnReadyStateProofは、ValidateReadyが独自の狭い状態所有権検査を行うことを確認する。
 // 先に実行されたValidateOwnershipの広い証明だけに依存しない。
 func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
@@ -144,6 +150,25 @@ func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t 
 			t.Fatalf("diverged common directory error=%v", err)
 		}
 	})
+}
+
+func TestValidateOwnershipRequiresFinalStateIdentityProof(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	preparer.Ownership = rejectingOwnershipValidator{}
+
+	err := preparer.ValidateOwnership(ctx, repo, target, head)
+	if !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "state ownership rejected") {
+		t.Fatalf("ownership validation error=%v, want the final state identity proof failure", err)
+	}
 }
 
 // slot ID を持たない広い ownership 検査は、READY lock の有無ではなく登録と物理所有だけを確認する。
