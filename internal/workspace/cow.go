@@ -53,7 +53,12 @@ func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repositor
 // compactsWorktree はcompactWorktreeが共有を試みるかを返す。falseの回は宛先に触れずに戻る。
 func (p *Preparer) compactsWorktree(repo discovery.Repository) bool {
 	mode := p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))
-	return mode != config.CopyModeCopy && cowAvailable()
+	return compactsWorktreeForMode(mode, cowAvailable())
+}
+
+// compactsWorktreeForMode は mode の条件を platform capability から分け、Linuxでも共有条件を検証できるようにする。
+func compactsWorktreeForMode(mode string, cowSupported bool) bool {
+	return mode != config.CopyModeCopy && cowSupported
 }
 
 // logCOWFallback は auto が通常コピーへ落ちた事実を残す。

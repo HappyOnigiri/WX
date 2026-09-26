@@ -115,7 +115,8 @@ func TestParseUpdateTreeDiff(t *testing.T) {
 	if !gitlink.gitlinks || !gitlink.modules || !errors.Is(gitlink.rejectIneligible(), ErrUpdateIneligible) {
 		t.Fatalf("gitlink diff=%+v was not rejected", gitlink)
 	}
-	for _, malformed := range []string{"garbage\x00path\x00", ":100644 100644 a b\x00path\x00", record("100644", "100644", "M", "")} {
+	truncatedRecord := ":100644 100644 " + strings.Repeat("1", 40) + " " + strings.Repeat("2", 40) + " M"
+	for _, malformed := range []string{"garbage\x00path\x00", ":100644 100644 a b\x00path\x00", record("100644", "100644", "M", ""), truncatedRecord} {
 		if _, err := parseUpdateTreeDiff(malformed); err == nil {
 			t.Fatalf("malformed diff %q was accepted", malformed)
 		}
