@@ -57,6 +57,66 @@ func TestResolveBranchesFallbackAndOverride(t *testing.T) {
 	}
 }
 
+// TestResolveBranchesKeepsValidatedOIDWhenGlobalRefMoves は解決途中で進んだ ref を採用しないことを確認する。
+func TestResolveBranchesKeepsValidatedOIDWhenGlobalRefMoves(t *testing.T) {
+	repoPath := initRepo(t, filepath.Join(t.TempDir(), "repository"))
+	git(t, repoPath, "branch", "feature")
+	validatedOID := gitOut(t, repoPath, "rev-parse", "refs/heads/feature")
+	if err := os.WriteFile(filepath.Join(repoPath, "tracked.txt"), []byte("advanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repoPath, "add", ".")
+	git(t, repoPath, "commit", "-m", "advance main")
+	advancedOID := gitOut(t, repoPath, "rev-parse", "HEAD")
+	if advancedOID == validatedOID {
+		t.Fatal("advanced commit has the same OID as the validated ref")
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "feature-ref-moved")
+	t.Setenv("WX_TEST_REAL_GIT", realGit)
+	t.Setenv("WX_TEST_GIT_MOVE_MARKER", marker)
+	t.Setenv("WX_TEST_GIT_NEXT_OID", advancedOID)
+	script := `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$4" = 'refs/heads/feature^{commit}' ] && [ ! -e "$WX_TEST_GIT_MOVE_MARKER" ]; then
+  : > "$WX_TEST_GIT_MOVE_MARKER"
+  result=$("$WX_TEST_REAL_GIT" "$@") || exit
+  "$WX_TEST_REAL_GIT" update-ref refs/heads/feature "$WX_TEST_GIT_NEXT_OID" || exit
+  printf '%s\n' "$result"
+  exit 0
+fi
+exec "$WX_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workspace := discovery.Workspace{Repositories: []discovery.Repository{{
+		ID: "repository", MainPath: domain.CanonicalPath(repoPath), RelativePath: "repository", DefaultBranch: "main",
+	}}}
+	resolved, err := ResolveBranches(context.Background(), &gitx.Runner{}, workspace, []string{"feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("Git wrapper did not advance the validated ref: %v", err)
+	}
+	if got := gitOut(t, repoPath, "rev-parse", "refs/heads/feature"); got != advancedOID {
+		t.Fatalf("feature ref=%s, want advanced OID %s", got, advancedOID)
+	}
+	if len(resolved) != 1 || resolved[0].RequestedRef != "feature" || resolved[0].OID != validatedOID {
+		t.Fatalf("resolved=%+v, want feature at validated OID %s", resolved, validatedOID)
+	}
+}
+
 func TestResolveBranchesRejectsGlobalMissingBranchForSingleRepository(t *testing.T) {
 	root := t.TempDir()
 	repo := initRepo(t, filepath.Join(root, "repository"))
