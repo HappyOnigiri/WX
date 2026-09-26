@@ -147,7 +147,7 @@ func TestCodexTrustArgsHonorsScopeAndUserOverrides(t *testing.T) {
 trust_level = "trusted"
 `)
 	lease := daemon.Lease{Path: "/lease/root", SourceWorkspace: "/workspace/source", RepositoryDirs: []string{"server"}}
-	base := []string{"--model", "gpt-5.6-sol"}
+	base := []string{"--model", "gpt-6-luna", "--config", `model_reasoning_effort="max"`}
 	override, ok := codexTrustInlineOverride(lease.SourceWorkspace, lease.Path)
 	if !ok {
 		t.Fatal("failed to construct expected override")
@@ -214,14 +214,14 @@ trust_level = "trusted"
 	client, stop := serveResumeLaunchRPCWithConfig(t, &resumeLaunchHandler{lease: lease, eventLog: eventLog}, config.Defaults())
 	defer stop()
 
-	if exit, relaunch := client.launch(context.Background(), launchPlan{agent: "codex", args: []string{"--model", "gpt-5.6-sol"}, cwd: root}); exit != 0 || relaunch != nil {
+	if exit, relaunch := client.launch(context.Background(), launchPlan{agent: "codex", args: []string{"--model", "gpt-6-luna", "--config", `model_reasoning_effort="max"`}, cwd: root}); exit != 0 || relaunch != nil {
 		t.Fatalf("exit=%d relaunch=%v", exit, relaunch)
 	}
 	override, ok := codexTrustInlineOverride(lease.SourceWorkspace, lease.Path)
 	if !ok {
 		t.Fatal("failed to construct expected override")
 	}
-	want := strings.Join([]string{"-c", override, "--add-dir", filepath.Join(root, "server"), "--add-dir", filepath.Join(root, "web"), "--model", "gpt-5.6-sol"}, " ")
+	want := strings.Join([]string{"--no-daemon", "-c", override, "--add-dir", filepath.Join(root, "server"), "--add-dir", filepath.Join(root, "web"), "--model", "gpt-6-luna", "--config", `model_reasoning_effort="max"`}, " ")
 	if got := readLaunchRecord(t, record)["args"]; got != want {
 		t.Fatalf("args=%q, want %q", got, want)
 	}

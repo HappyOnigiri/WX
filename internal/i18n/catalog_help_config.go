@@ -38,8 +38,9 @@ shared repository defaults for that Workspace. A multi-repository Workspace can
 also edit one membership with --repository <relative-path>. Scope flags are
 required for all settings other than the read-only wx config language contract.
 
-A workspace overrides worktree, copy, link, reuse_standby, warm_count, agent.add_dir,
-retention.hot_standby, retention.ended_worktree, discovery.max_depth and
+A workspace overrides worktree, copy, link, reuse_standby, warm_count,
+agent.add_dir, agent.codex_no_daemon, retention.hot_standby,
+retention.ended_worktree, discovery.max_depth and
 discovery.exclude. warm_count 0 disables replenishment, and so does
 retention.hot_standby 0; reducing the count lets normal GC reclaim unused standby
 slots. reuse_standby controls whether an older READY standby is updated at lease
@@ -82,6 +83,10 @@ A workspace with several repositories puts the agent's working directory at the
 parent of those repositories, so their .claude/skills and other agent assets are
 only loaded when the directories are passed with --add-dir. A workspace that is
 a single repository has nothing to pass. Directories you pass yourself are kept.
+
+Codex daemon (agent.codex_no_daemon):
+  true   pass --no-daemon when wx starts Codex (default)
+  false  let Codex use its shared daemon
 
 Copy mode (repository_defaults.storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
@@ -156,8 +161,9 @@ shared repository defaults for that Workspace. A multi-repository Workspace can
 also edit one membership with --repository <relative-path>. Scope flags are
 required for all settings other than the read-only wx config language contract.
 
-A workspace overrides worktree, copy, link, reuse_standby, warm_count, agent.add_dir,
-retention.hot_standby, retention.ended_worktree, discovery.max_depth and
+A workspace overrides worktree, copy, link, reuse_standby, warm_count,
+agent.add_dir, agent.codex_no_daemon, retention.hot_standby,
+retention.ended_worktree, discovery.max_depth and
 discovery.exclude. warm_count 0 disables replenishment, and so does
 retention.hot_standby 0; reducing the count lets normal GC reclaim unused standby
 slots. reuse_standby controls whether an older READY standby is updated at lease
@@ -200,6 +206,10 @@ Agent directory（agent.add_dir）:
 そのため .claude/skills などの agent asset は
 --add-dir で directory を渡した場合だけ読み込まれます。workspace が
 単一 repository なら渡すものはありません。自分で渡した directory は保持します。
+
+Codex の daemon（agent.codex_no_daemon）:
+  true   wx が Codex を起動するときに --no-daemon を渡す（既定）
+  false  Codex が共有 daemon を使うことを許可する
 
 Copy mode (repository_defaults.storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)

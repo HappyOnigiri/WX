@@ -73,6 +73,49 @@ func TestDirectAgentPreservesCWDArgumentsAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestDirectCodexDisablesDaemon(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	bin := t.TempDir()
+	record := filepath.Join(root, "argv")
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WX_TEST_ARGV_RECORD\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WX_TEST_ARGV_RECORD", record)
+	client, err := New(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit := client.RunAgentWithPolicyFrom(context.Background(), root, "codex", []string{"--model", "gpt-6-luna"}, nil, false, WorktreeOptions{Disable: true}); exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "--no-daemon\n--model\ngpt-6-luna\n" {
+		t.Fatalf("argv=%q", got)
+	}
+	disabled := false
+	cfg := config.Defaults()
+	cfg.WorkspaceDefaults.Agent.CodexNoDaemon = &disabled
+	client, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit := client.RunAgentWithPolicyFrom(context.Background(), root, "codex", []string{"--model", "gpt-6-luna"}, nil, false, WorktreeOptions{Disable: true}); exit != 0 {
+		t.Fatalf("disabled exit=%d", exit)
+	}
+	data, err = os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "--model\ngpt-6-luna\n" {
+		t.Fatalf("disabled argv=%q", got)
+	}
+}
+
 func TestRunAgentWithPolicyFromUsesExplicitCWDWithoutChangingProcess(t *testing.T) {
 	original, err := os.Getwd()
 	if err != nil {

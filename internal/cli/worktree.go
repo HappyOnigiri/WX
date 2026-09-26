@@ -76,7 +76,9 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 			fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 			return 2
 		}
-		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args), c.directHookEnvironment(ctx, sourceCWD, root, rootErr, options))
+		args = addDirArgs(directAddDirs(c.Config, root), args)
+		args = codexNoDaemonArgs(agent, c.Config.CodexNoDaemonForWorkspace(root), args)
+		return runDirectAgentFrom(ctx, sourceCWD, agent, args, c.directHookEnvironment(ctx, sourceCWD, root, rootErr, options))
 	}
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。

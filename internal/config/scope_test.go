@@ -20,6 +20,7 @@ var scopeSamples = map[Scope]map[string]string{
 		"fetch_default_branch":     "false",
 		"warm_count":               "2",
 		"agent.add_dir":            "off",
+		"agent.codex_no_daemon":    "false",
 		"retention.hot_standby":    "30m0s",
 		"retention.ended_worktree": "2h0m0s",
 		"discovery.max_depth":      "3",
@@ -65,7 +66,7 @@ var scopeInvalid = map[Scope]map[string]string{
 
 // scopeUnvalidated は値域を持たず、Validate が通してよいキーである。
 var scopeUnvalidated = map[Scope][]string{
-	ScopeWorkspace:  {"copy", "link", "reuse_standby", "fetch_default_branch", "discovery.exclude"},
+	ScopeWorkspace:  {"copy", "link", "reuse_standby", "fetch_default_branch", "agent.codex_no_daemon", "discovery.exclude"},
 	ScopeRepository: {"default_branch", "dir_name", "prepare.command", "prepare.inputs", "prepare.version", "includes.default_agent_rules", "readiness.early_paths"},
 }
 
@@ -391,13 +392,17 @@ func TestReadinessForRepositoryInheritsGlobalValues(t *testing.T) {
 func TestScopeFieldsReportTheSource(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
-	cfg.Workspaces["/repo"] = Workspace{Agent: WorkspaceAgent{AddDir: AgentAddDirOff}}
+	noDaemon := false
+	cfg.Workspaces["/repo"] = Workspace{Agent: WorkspaceAgent{AddDir: AgentAddDirOff, CodexNoDaemon: &noDaemon}}
 	sources := map[string]ScopeField{}
 	for _, field := range ScopeFields(cfg, ScopeWorkspace, "/repo") {
 		sources[field.Key] = field
 	}
 	if got := sources["agent.add_dir"]; got.Value != AgentAddDirOff || got.Source != "workspace" {
 		t.Fatalf("agent.add_dir=%+v, want the workspace override", got)
+	}
+	if got := sources["agent.codex_no_daemon"]; got.Value != "false" || got.Source != "workspace" {
+		t.Fatalf("agent.codex_no_daemon=%+v, want the workspace override", got)
 	}
 	if got := sources["warm_count"]; got.Value != "2" || got.Source != "global" {
 		t.Fatalf("warm_count=%+v, want the inherited global value", got)

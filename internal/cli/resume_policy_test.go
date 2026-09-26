@@ -236,7 +236,7 @@ func TestResumeByIDWithoutRecordStartsWithoutWorktreeForCodex(t *testing.T) {
 	if launch["pwd"] != source {
 		t.Fatalf("agent cwd=%q, want the launch directory %q", launch["pwd"], source)
 	}
-	if launch["args"] != "resume "+id {
+	if launch["args"] != "--no-daemon resume "+id {
 		t.Fatalf("agent args=%q", launch["args"])
 	}
 }

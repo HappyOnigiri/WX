@@ -517,6 +517,31 @@ func TestAgentAddDirConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexNoDaemonDefaultsOnAndHonorsWorkspaceOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if !Defaults().CodexNoDaemonForWorkspace(root) {
+		t.Fatal("default Codex no-daemon policy is off")
+	}
+	var raw Config
+	if err := SetField(&raw, "agent.codex_no_daemon", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetScopeField(&raw, ScopeWorkspace, root, "agent.codex_no_daemon", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CodexNoDaemonForWorkspace("/other") || !loaded.CodexNoDaemonForWorkspace(root) {
+		t.Fatalf("Codex no-daemon policy: other=%t repo=%t", loaded.CodexNoDaemonForWorkspace("/other"), loaded.CodexNoDaemonForWorkspace(root))
+	}
+}
+
 // TestReadinessProgressDefaultsOnAndTurnsOffFromYAML は進捗表示の既定が有効で、
 // 設定ファイルの false が既定へ埋め戻されずに残ることを確かめる。
 func TestReadinessProgressDefaultsOnAndTurnsOffFromYAML(t *testing.T) {

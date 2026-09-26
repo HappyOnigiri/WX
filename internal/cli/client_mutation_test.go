@@ -114,7 +114,7 @@ func TestLaunchMutationBoundariesPreserveExplicitCodexArguments(t *testing.T) {
 		t.Fatalf("codex launch: exit=%d relaunch=%v", exit, relaunch)
 	}
 	launch := readLaunchRecord(t, record)
-	if got := launch["args"]; got != "resume --cd "+root+" native-session --model gpt-5.6-sol" {
+	if got := launch["args"]; got != "--no-daemon resume --cd "+root+" native-session --model gpt-5.6-sol" {
 		t.Fatalf("Codex args=%q, want explicit arguments preserved", got)
 	}
 }

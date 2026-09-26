@@ -64,6 +64,14 @@ func (c Config) AddDirForWorkspace(root string) (string, bool) {
 	return c.WorkspaceDefaults.Agent.AddDir, false
 }
 
+// CodexNoDaemonForWorkspace は Codex の共有 daemon を使わない実効方針を返す。
+func (c Config) CodexNoDaemonForWorkspace(root string) bool {
+	if enabled := c.WorkspaceFor(root).Agent.CodexNoDaemon; enabled != nil {
+		return *enabled
+	}
+	return true
+}
+
 // HotStandbyForWorkspace は workspace root に対する待機枠の保持期間と、個別指定の有無を返す。
 // Workspaces は NormalizePaths 済みであることを呼び出し側の契約とする。
 func (c Config) HotStandbyForWorkspace(root string) (time.Duration, bool) {

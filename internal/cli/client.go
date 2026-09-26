@@ -407,6 +407,9 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 	// Codex の multi-repository 起動だけ、source workspace の明示的 trust を lease root へ渡す。
 	// config.toml の読み取りは readiness 完了後に行い、起動直前の設定を反映する。
 	args = codexTrustArgs(plan.agent, plan.leaseKind, lease, args)
+	if plan.leaseKind == "" {
+		args = codexNoDaemonArgs(plan.agent, c.Config.CodexNoDaemonForWorkspace(lease.SourceWorkspace), args)
+	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
 	stopSetupSignals()
 	return c.startAgent(ctx, plan.agent, lease, args, env, terminator), nil

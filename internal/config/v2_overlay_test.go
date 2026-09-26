@@ -60,6 +60,7 @@ workspace_defaults:
   warm_count: 3
   agent:
     add_dir: worktree
+    codex_no_daemon: false
   retention:
     hot_standby: 9h
     ended_worktree: 8h

@@ -31,6 +31,7 @@ func DefaultsV2() Config {
 	cow := legacy.Storage.COWMinSizeKiB
 	include := legacy.Includes.DefaultAgentRules
 	progress := legacy.Readiness.Progress
+	codexNoDaemon := legacy.Agent.CodexNoDaemon
 	autoCheck := legacy.Update.AutoCheck
 	autoApply := legacy.Update.AutoApply
 	loginShell := legacy.Daemon.LoginShell
@@ -48,7 +49,7 @@ func DefaultsV2() Config {
 		},
 		WorkspaceDefaults: WorkspaceDefaults{
 			Worktree:     legacy.Worktree.Undefined,
-			ReuseStandby: &trueValue, FetchDefaultBranch: &fetchDefaultBranch, WarmCount: &warm, Agent: WorkspaceAgent{AddDir: legacy.Agent.AddDir},
+			ReuseStandby: &trueValue, FetchDefaultBranch: &fetchDefaultBranch, WarmCount: &warm, Agent: WorkspaceAgent{AddDir: legacy.Agent.AddDir, CodexNoDaemon: &codexNoDaemon},
 			Retention: WorkspaceRetention{HotStandby: &legacy.Retention.HotStandby, EndedWorktree: &legacy.Retention.EndedWorktree},
 			Discovery: WorkspaceDiscovery{MaxDepth: &legacy.Discovery.MaxDepth, Exclude: cloneStrings(legacy.Discovery.Exclude)},
 		},
@@ -142,7 +143,7 @@ func withLegacyAdapter(c Config) Config {
 	set(workspace.FieldByName("ReuseStandby"), builtinWorkspace.FieldByName("ReuseStandby"), reflect.ValueOf(&old.Worktree.ReuseStandby))
 	set(workspace.FieldByName("FetchDefaultBranch"), builtinWorkspace.FieldByName("FetchDefaultBranch"), reflect.ValueOf(&old.Worktree.FetchDefaultBranch))
 	set(workspace.FieldByName("WarmCount"), builtinWorkspace.FieldByName("WarmCount"), reflect.ValueOf(&old.Pool.WarmPerWorkspace))
-	set(workspace.FieldByName("Agent"), builtinWorkspace.FieldByName("Agent"), reflect.ValueOf(WorkspaceAgent{AddDir: old.Agent.AddDir}))
+	set(workspace.FieldByName("Agent"), builtinWorkspace.FieldByName("Agent"), reflect.ValueOf(WorkspaceAgent{AddDir: old.Agent.AddDir, CodexNoDaemon: &old.Agent.CodexNoDaemon}))
 	set(workspace.FieldByName("Retention"), builtinWorkspace.FieldByName("Retention"), reflect.ValueOf(WorkspaceRetention{HotStandby: &old.Retention.HotStandby, EndedWorktree: &old.Retention.EndedWorktree}))
 	set(workspace.FieldByName("Discovery"), builtinWorkspace.FieldByName("Discovery"), reflect.ValueOf(WorkspaceDiscovery{MaxDepth: &old.Discovery.MaxDepth, Exclude: cloneStrings(old.Discovery.Exclude)}))
 	// repository defaults 節
@@ -404,6 +405,9 @@ func overlayWorkspaceDefaults(dst *WorkspaceDefaults, src WorkspaceDefaults, raw
 	if raw.has("workspace_defaults.agent.add_dir", src.Agent.AddDir != "") {
 		dst.Agent.AddDir = src.Agent.AddDir
 	}
+	if raw.has("workspace_defaults.agent.codex_no_daemon", src.Agent.CodexNoDaemon != nil) {
+		dst.Agent.CodexNoDaemon = src.Agent.CodexNoDaemon
+	}
 	if raw.has("workspace_defaults.retention.hot_standby", src.Retention.HotStandby != nil) {
 		dst.Retention.HotStandby = src.Retention.HotStandby
 	}
@@ -480,6 +484,7 @@ func flattenV2(c *Config) {
 	c.Readiness.Mode, c.Readiness.EarlyPaths, c.Readiness.Timeout, c.Readiness.Progress = r.Readiness.Mode, cloneStrings(r.Readiness.EarlyPaths), derefDuration(r.Readiness.Timeout), derefBool(r.Readiness.Progress)
 	c.Includes.DefaultAgentRules = derefBool(r.Includes.DefaultAgentRules)
 	c.Agent.AddDir = w.Agent.AddDir
+	c.Agent.CodexNoDaemon = derefBool(w.Agent.CodexNoDaemon)
 	c.Resume, c.Lease, c.Sessions, c.Logging = s.Resume, s.Lease, s.Sessions, s.Logging
 	c.Update.AutoCheck = derefBool(s.Update.AutoCheck)
 	c.Update.AutoApply = derefBool(s.Update.AutoApply)
@@ -582,6 +587,9 @@ func mergeWorkspace(dst *Workspace, src Workspace) {
 	}
 	if src.Agent.AddDir != "" {
 		dst.Agent.AddDir = src.Agent.AddDir
+	}
+	if src.Agent.CodexNoDaemon != nil {
+		dst.Agent.CodexNoDaemon = src.Agent.CodexNoDaemon
 	}
 	if src.Retention.HotStandby != nil {
 		dst.Retention.HotStandby = src.Retention.HotStandby

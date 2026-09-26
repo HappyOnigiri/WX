@@ -91,7 +91,7 @@ func TestRunResumeCodexAddsResumeCDAndNativeID(t *testing.T) {
 		t.Fatalf("RunResume exit=%d", exit)
 	}
 	launch := readLaunchRecord(t, record)
-	want := "resume --cd " + workspace + " native-codex --model o3"
+	want := "--no-daemon resume --cd " + workspace + " native-codex --model o3"
 	if got := launch["args"]; got != want {
 		t.Fatalf("Codex resume args=%q, want %q; record=%v", got, want, launch)
 	}
@@ -123,7 +123,7 @@ func TestRunAgentCodexExecResumeRestoresAndBuildsExecArgs(t *testing.T) {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	launch := readLaunchRecord(t, record)
-	want := "exec --cd " + workspace + " resume native-codex --json"
+	want := "--no-daemon exec --cd " + workspace + " resume native-codex --json"
 	if got := launch["args"]; got != want {
 		t.Fatalf("Codex exec resume args=%q, want %q; record=%v", got, want, launch)
 	}
@@ -162,7 +162,7 @@ func TestRunAgentCodexExecResumeWithoutSelectorStartsFreshWithNotice(t *testing.
 		t.Fatalf("stderr=%q, want the snapshot notice", stderr)
 	}
 	launch := readLaunchRecord(t, record)
-	if got := launch["args"]; got != "exec resume" {
+	if got := launch["args"]; got != "--no-daemon exec resume" {
 		t.Fatalf("Codex exec resume without selector args=%q, want original args; record=%v", got, launch)
 	}
 	methods := handler.methodsSnapshot()
@@ -194,7 +194,7 @@ func TestRunResumeCodexExecInsertsResumeAfterExec(t *testing.T) {
 		t.Fatalf("RunResume exit=%d", exit)
 	}
 	launch := readLaunchRecord(t, record)
-	want := "exec --cd " + workspace + " --json resume native-codex prompt"
+	want := "--no-daemon exec --cd " + workspace + " --json resume native-codex prompt"
 	if got := launch["args"]; got != want {
 		t.Fatalf("Codex explicit exec resume args=%q, want %q; record=%v", got, want, launch)
 	}
@@ -223,7 +223,7 @@ func TestRunResumeCodexExecInfersAgentAfterWXSessionLookup(t *testing.T) {
 		t.Fatalf("RunResume exit=%d", exit)
 	}
 	launch := readLaunchRecord(t, record)
-	want := "exec --cd " + workspace + " --json resume native-codex prompt"
+	want := "--no-daemon exec --cd " + workspace + " --json resume native-codex prompt"
 	if got := launch["args"]; got != want {
 		t.Fatalf("Codex inferred exec resume args=%q, want %q; record=%v", got, want, launch)
 	}

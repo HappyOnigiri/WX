@@ -345,9 +345,10 @@ type Workspace struct {
 	Discovered bool `yaml:"-"`
 }
 
-// WorkspaceAgent は agent 節の workspace 個別指定である。空文字は未指定を表す。
+// WorkspaceAgent は agent 節の workspace 個別指定である。
 type WorkspaceAgent struct {
-	AddDir string `yaml:"add_dir,omitempty"`
+	AddDir        string `yaml:"add_dir,omitempty"`
+	CodexNoDaemon *bool  `yaml:"codex_no_daemon,omitempty"`
 }
 
 // WorkspaceRetention は retention 節の workspace 個別指定である。
@@ -371,7 +372,8 @@ type Includes struct {
 type Agent struct {
 	// AddDir は CWD 直下の repository directory を agent の --add-dir へ渡す条件を決める。
 	// 複数 repository の workspace では agent の CWD が repository の親になり、渡さないと配下の .claude/skills などが読まれない。
-	AddDir string `yaml:"add_dir,omitempty"`
+	AddDir        string `yaml:"add_dir,omitempty"`
+	CodexNoDaemon bool   `yaml:"codex_no_daemon,omitempty"`
 }
 type Repository struct {
 	DefaultBranch string `yaml:"default_branch,omitempty"`
@@ -500,7 +502,7 @@ func defaultsLegacy() Config {
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}, Progress: true}, Resume: Resume{AutoFresh: false},
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
-		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
+		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways, CodexNoDaemon: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
 		Update:     Update{AutoCheck: true, AutoApply: true},
 		Daemon:     Daemon{LoginShell: true},
