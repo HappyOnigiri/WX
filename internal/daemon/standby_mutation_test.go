@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -583,24 +585,46 @@ func TestRunStandbyUpdateScopesRepositoryIndexFromOne(t *testing.T) {
 	if update.ID == "" {
 		t.Fatalf("jobs=%+v, want leased UPDATE", jops)
 	}
+	checkoutStarted := make(chan struct{})
+	allowCheckout := make(chan struct{})
+	var checkoutOnce, releaseCheckoutOnce sync.Once
+	releaseCheckout := func() { releaseCheckoutOnce.Do(func() { close(allowCheckout) }) }
+	defer releaseCheckout()
+	manager.git.SetBeforeRunAtHook(func(args []string) {
+		if !slices.Contains(args, "checkout") {
+			return
+		}
+		checkoutOnce.Do(func() {
+			close(checkoutStarted)
+			<-allowCheckout
+		})
+	})
 	errCh := make(chan error, 1)
 	go func() { errCh <- manager.runStandbyUpdate(ctx, update) }()
-	var activePhaseName string
-	var activeScopeIndex, activeScopeTotal int
+	select {
+	case <-checkoutStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("standby update did not reach checkout")
+	}
+	active, running, ok := manager.ActivePhase(update.SlotID)
+	if !running || !ok || active.Name != "update-checkout" || active.Scope.Index != 1 || active.Scope.Total != 2 {
+		t.Fatalf("active phase=%+v running=%t ok=%t, want update-checkout 1/2", active, running, ok)
+	}
+	releaseCheckout()
+	var prepareScopeIndex, prepareScopeTotal int
 	waitUntil(t, 5*time.Second, func() bool {
 		active, running, ok := manager.ActivePhase(update.SlotID)
 		if !running || !ok || active.Name != "update-prepare-command" {
 			return false
 		}
-		activePhaseName = active.Name
-		activeScopeIndex, activeScopeTotal = active.Scope.Index, active.Scope.Total
+		prepareScopeIndex, prepareScopeTotal = active.Scope.Index, active.Scope.Total
 		return true
 	})
 	if runErr := <-errCh; runErr != nil {
 		t.Fatal(runErr)
 	}
-	if activePhaseName != "update-prepare-command" || activeScopeIndex != 1 || activeScopeTotal != 2 {
-		t.Fatalf("active phase=%q scope=%d/%d, want update-prepare-command 1/2", activePhaseName, activeScopeIndex, activeScopeTotal)
+	if prepareScopeIndex != 1 || prepareScopeTotal != 2 {
+		t.Fatalf("prepare command scope=%d/%d, want 1/2", prepareScopeIndex, prepareScopeTotal)
 	}
 }
 
@@ -648,4 +672,91 @@ func TestScheduleStandbyJobSkipsUnreservedSlot(t *testing.T) {
 	if got := pending(); got != 1 {
 		t.Fatalf("pending jobs after a reserved slot=%d, want 1", got)
 	}
+}
+
+func TestLeaseAfterStandbyUpdateFailureKeepsLeaseAndSchedulesReplenishment(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "repository")
+	cfg := manager.Config()
+	cfg.Worktree.Undefined = "hot"
+	cfg.Pool.WarmPerWorkspace = 1
+	cfg.Retention.HotStandby.Duration = time.Hour
+	manager.mu.Lock()
+	manager.cfg = cfg
+	manager.mu.Unlock()
+	if !manager.standbyReplenishmentEnabled(workspaceRecord) {
+		t.Fatal("standby replenishment is disabled for the test workspace")
+	}
+
+	repository := workspaceRecord.Repositories[0]
+	_, generation, err := store.WorkspaceWithGeneration(ctx, string(workspaceRecord.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "late-update-failure", generation, "PREPARING")
+	initial := state.SlotRepository{RepositoryID: string(repository.ID), DirName: "repository", State: "READY", RequestedRef: "main", BaseOID: "old-oid", Fingerprint: "old-fingerprint", CompatibilityFingerprint: "compatible"}
+	prepareJob, err := store.CreateStandby(ctx, slot, []state.SlotRepository{initial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplacePlacements(ctx, slot.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(ctx, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimedPrepare, err := store.ClaimJob(ctx, prepareJob.ID, "prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimedPrepare.ID, "prepare", nil); err != nil {
+		t.Fatal(err)
+	}
+	token := "late-update-failure-token"
+	session := state.Session{ID: "late-update-failure-session", WorkspaceID: string(workspaceRecord.ID), State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken(token)}
+	target := state.SlotRepository{RepositoryID: string(repository.ID), RequestedRef: "main", BaseOID: "new-oid", Fingerprint: "new-fingerprint", CompatibilityFingerprint: "compatible", UpdateBaseOID: "old-oid", UpdateFingerprint: "old-fingerprint"}
+	if _, err := store.ReserveStandbyUpdate(ctx, slot.ID, session, []state.SlotRepository{target}, nil, "copy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginStandbyUpdate(ctx, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkRepositoryUpdateRunning(ctx, slot.ID, string(repository.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkStandbyUpdateEarlyReady(ctx, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordEarlyReadyPrepareFailure(ctx, slot.ID, "UPDATE_FAILED:late-check", "", "update-prepare-command"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.leaseAfterStandbyUpdateFailure(ctx, workspaceRecord, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+	leased, err := store.Slot(ctx, slot.ID)
+	if err != nil || leased.State != "LEASED" || leased.FailureCode != "UPDATE_FAILED:late-check" || leased.EarlyReadyAt == "" || leased.UpdateCompletedAt == "" || leased.PlacementHistoryComplete {
+		t.Fatalf("slot after late update failure=%+v err=%v, want a leased slot with failure and incomplete placement history", leased, err)
+	}
+	notice, err := manager.ClaimPrepareFailureNotice(ctx, session.ID, token)
+	if err != nil || !strings.Contains(notice, leased.FailureCode) {
+		t.Fatalf("first prepare notice=%q err=%v, want the recorded failure", notice, err)
+	}
+	if repeat, err := manager.ClaimPrepareFailureNotice(ctx, session.ID, token); err != nil || repeat != "" {
+		t.Fatalf("prepare notice repeated=%q err=%v", repeat, err)
+	}
+	work, execution, ok := manager.jobQueue.take()
+	if !ok || work.class != jobClassMaintenance {
+		t.Fatalf("queued work=%+v ok=%t, want standby replenishment in maintenance queue", work, ok)
+	}
+	defer manager.jobQueue.finish(work, execution)
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.ID == work.id && job.Kind == "ENSURE_STANDBY" && job.WorkspaceID == string(workspaceRecord.ID) {
+			return
+		}
+	}
+	t.Fatalf("queued work %s has no pending ENSURE_STANDBY job: %+v", work.id, jobs)
 }

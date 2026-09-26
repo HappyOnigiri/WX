@@ -34,6 +34,12 @@ func TestStandbyUpdatePlanTimingLogArgs(t *testing.T) {
 	}
 }
 
+func TestStandbyUpdatePlanTimingLogArgsWithoutTimings(t *testing.T) {
+	if got := (standbyUpdatePlan{}).timingLogArgs(); len(got) != 0 {
+		t.Fatalf("timing log args=%v, want no args", got)
+	}
+}
+
 // reuseStandbyFixture は貸出時の更新判定を確かめる最小構成で、READY standbyを1件持つ。
 // worker を起動しないため、job は runPendingJobs で手動に進める。
 type reuseStandbyFixture struct {

@@ -427,6 +427,31 @@ func TestRegisteredScopeUsesSlotMembershipWhenRepositoryIdentityMatches(t *testi
 	}
 }
 
+func TestRegisteredScopeFallsBackWhenSlotRepositoryMembershipChanges(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, original, _, _ := managerCoverageFixture(t, "repository")
+	_, generation, err := store.WorkspaceWithGeneration(ctx, string(original.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := testSlot(t, manager, string(original.ID), "scope-replaced-repository", generation, "ARCHIVED")
+	initGitRepo(t, slot.Path)
+	discoverer := discovery.Discoverer{Git: manager.git, Config: manager.Config()}
+	replacement, err := discoverer.Resolve(ctx, slot.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement = registerTestWorkspace(t, store, replacement)
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	scope, found, err := manager.registeredScopeWorkspace(ctx, slot.Path)
+	if err != nil || !found || scope.ID != string(replacement.ID) || scope.Root != string(replacement.Root) {
+		t.Fatalf("registered scope=%+v found=%t err=%v, want replacement workspace %s", scope, found, err, replacement.ID)
+	}
+}
+
 func TestRegisteredScopePropagatesMainWorktreeLookupFailure(t *testing.T) {
 	t.Parallel()
 	f := manualManagerFixture(t)
