@@ -13,7 +13,28 @@ import (
 
 	"github.com/HappyOnigiri/WorktreeX/internal/config"
 	"github.com/HappyOnigiri/WorktreeX/internal/state"
+	"github.com/HappyOnigiri/WorktreeX/internal/workspace"
 )
+
+func TestPreparationFailurePreservesOnlyNonemptyCommandFailureID(t *testing.T) {
+	manager := &Manager{}
+	for _, test := range []struct {
+		name      string
+		failureID string
+		wantCode  string
+	}{
+		{name: "with failure ID", failureID: "command-123", wantCode: "PREPARE_FAILED:command-123"},
+		{name: "without failure ID", wantCode: "PREPARE_FAILED"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := &workspace.PrepareCommandError{FailureID: test.failureID, DetailPath: "/details/prepare.log", Err: errors.New("prepare command failed")}
+			code, detail := manager.preparationFailure("PREPARE_FAILED", failure)
+			if code != test.wantCode || detail != failure.DetailPath {
+				t.Fatalf("preparation failure=(%q,%q), want (%q,%q)", code, detail, test.wantCode, failure.DetailPath)
+			}
+		})
+	}
+}
 
 // 全準備の待機を短い期限で検査するため、daemon の他テストとは直列に実行する。
 func TestEarlyReadinessWaitsForAllRepositoriesButNotRemainingCheckout(t *testing.T) {
