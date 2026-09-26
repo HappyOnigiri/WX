@@ -53,6 +53,19 @@ func TestLexPolicyCommandTracksNestedQuotedSubstitution(t *testing.T) {
 	}
 }
 
+func TestLexPolicyCommandTracksSubshellInQuotedSubstitution(t *testing.T) {
+	tokens, ok := lexPolicyCommand(`echo "$( (git switch feature) )"`)
+	if !ok {
+		t.Fatal("subshell inside command substitution was not well formed")
+	}
+	if len(tokens) != 2 || len(tokens[1].word.substitutions) != 1 {
+		t.Fatalf("tokens=%+v, want one command substitution", tokens)
+	}
+	if got, want := policyTokenString(tokens[1].word.substitutions[0]), "( git switch feature )"; got != want {
+		t.Fatalf("substitution=%q, want %q", got, want)
+	}
+}
+
 func TestPolicySegmentRejectsWrappedShellWithoutCommand(t *testing.T) {
 	base := t.TempDir()
 	parts := []commandWord{{value: "su" + "do"}, {value: "ba" + "sh"}}
